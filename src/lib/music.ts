@@ -2,24 +2,30 @@
  * Score.
  *
  * Three cues, all local files under public/audio/:
- *   boot-music — the JARVIS start-up sound, once, as the reactor comes up
- *   ambient    — the opening music, once, alongside it
- *   work       — an industrial cue that loops while a tool is running
+ *   intro-music — your own track, once, starting WITH EDITH's boot line a
+ *                 couple of seconds into the start-up sequence and blooming
+ *                 out from under her voice when she finishes. Drop any mp3
+ *                 in as intro-music.mp3 (boot-music.mp3 is the fallback);
+ *                 with no file there the cue silently skips and only the
+ *                 line speaks.
+ *   ambient     — the opening bed, once, across the boot sequence
+ *   work        — an industrial cue that loops while a tool is running
  *
  * Only `work` repeats. The other two belong to the power-up and are over when
  * it is: an interface that keeps playing music at you for as long as it is open
  * is one you end up muting, and a muted assistant loses the sounds that
  * actually carry meaning — the wake tone, the tool tick, the completion chime.
  *
- * All of it is Kevin MacLeod (incompetech.com), CC BY 4.0 — free to use with
- * attribution and safe on a monetised channel, unlike the actual film score,
- * which would be claimed within a day of upload.
+ * The shipped cues are Kevin MacLeod (incompetech.com), CC BY 4.0 — free to
+ * use with attribution and safe on a monetised channel, unlike the actual film
+ * score, which would be claimed within a day of upload. intro-music is your
+ * own track; honour whatever licence it carries.
  *
  * Everything degrades quietly: if a file is missing the cue simply doesn't
  * play, and the synthesised bed in sfx.ts covers the ambient case.
  */
 
-type Cue = 'boot-music' | 'ambient' | 'work'
+type Cue = 'intro-music' | 'ambient' | 'work'
 
 type Track = {
   el: HTMLAudioElement
@@ -41,16 +47,17 @@ const missing = new Set<Cue>()
  * sentence. It never looped; it was raised from the dead once a turn.
  */
 const finished = new Set<Cue>()
-const ALL: Cue[] = ['boot-music', 'ambient', 'work']
+const ALL: Cue[] = ['intro-music', 'ambient', 'work']
 let enabled = false
 
 /** Resting levels. Music sits well under the voice — it is atmosphere, not a
  *  soundtrack, and JARVIS has to stay intelligible over it. */
 const LEVEL: Record<Cue, number> = {
-  // The boot cue is the JARVIS start-up sound itself, not background swell, so
-  // it sits forward — it is meant to be heard as the reactor comes up, the way
-  // the film plays it. The ambient bed underneath stays a whisper.
-  'boot-music': 0.85,
+  // The intro track's resting level: where it sits once she has finished the
+  // line and blooms out from under the duck. It STARTS already ducked
+  // (duck(true) before playBoot), so while she speaks it rides at that level —
+  // present, not competing. The ambient bed underneath stays a whisper.
+  'intro-music': 0.85,
   /**
    * Under the intro, not alongside it.
    *
@@ -73,7 +80,7 @@ const LEVEL: Record<Cue, number> = {
  * is speaking brings the work cue in at its ducked level rather than at full,
  * and it rises the rest of the way when he stops.
  */
-const want: Record<Cue, number> = { 'boot-music': 0, ambient: 0, work: 0 }
+const want: Record<Cue, number> = { 'intro-music': 0, ambient: 0, work: 0 }
 
 let ducked = false
 /** How far the bed drops under the voice. */
@@ -90,15 +97,25 @@ function track(cue: Cue): Track | null {
     el.loop = cue === 'work'
     el.volume = 0
     // A missing file is not an error worth surfacing — the interface just
-    // runs without that layer.
-    el.addEventListener(
-      'error',
-      () => {
-        tracks.delete(cue)
-        missing.add(cue)
-      },
-      { once: true },
-    )
+    // runs without that layer. The one nuance is the intro slot: the name a
+    // dropped-in start-up track most often arrives under is boot-music.mp3
+    // (what this cue used to be called), so a missing intro-music.mp3 retries
+    // once under that name before giving up. Without the fallback the boot
+    // runs with no music at all and nothing on screen says why.
+    let retried = false
+    const onMissing = () => {
+      if (cue === 'intro-music' && !retried) {
+        retried = true
+        // Assigning src re-runs the media load, so boot-music.mp3 either
+        // takes the slot or fires error again and the branch below runs.
+        el.src = '/audio/boot-music.mp3'
+        return
+      }
+      el.removeEventListener('error', onMissing)
+      tracks.delete(cue)
+      missing.add(cue)
+    }
+    el.addEventListener('error', onMissing)
     // A cue that has played out is over. Zeroing `want` as well as recording it
     // means every later level calculation agrees, rather than leaving a stale
     // target for something to act on.
@@ -119,18 +136,20 @@ function track(cue: Cue): Track | null {
 /** Must be called from a user gesture — browsers block audio before one. */
 export function enable() {
   enabled = true
-  // Warm the files so the boot cue starts on time rather than after a buffer.
+  // Warm the files so the intro cue starts on time rather than after a buffer.
   ALL.forEach(track)
 }
 
 /**
- * The level a cue should actually be at right now. The boot swell is exempt
- * from ducking: it is a scripted one-shot with its own dissolve already
- * written, and pulling it down mid-flight reads as a fault rather than as
- * headroom being made.
+ * The level a cue should actually be at right now.
+ *
+ * The intro cue used to be exempt from ducking — when it was a swell over the
+ * silent animation, pulling it down mid-flight read as a fault. It now plays
+ * under EDITH's boot line, so ducking it IS the feature: down under her voice,
+ * back up when she has finished, like everything else that makes a sound.
  */
 function level(cue: Cue): number {
-  return ducked && cue !== 'boot-music' ? want[cue] * DUCK : want[cue]
+  return ducked ? want[cue] * DUCK : want[cue]
 }
 
 function fadeTo(cue: Cue, to: number, ms: number) {
@@ -160,17 +179,26 @@ function set(cue: Cue, to: number, ms: number) {
   fadeTo(cue, level(cue), ms)
 }
 
-/** The boot cue's own dissolve, held so stopAll can cancel it. */
+/** The intro cue's own dissolve, held so stopAll can cancel it. */
 let dissolve: ReturnType<typeof setTimeout> | null = null
 
-/** The power-up swell. Plays once, then hands over to the ambient bed. */
+/**
+ * The intro cue. Your track, once: started the moment EDITH begins her boot
+ * line, a couple of seconds into the start-up sequence, so it plays under her
+ * voice from the first syllable rather than arriving after she has finished
+ * talking. It arrives already
+ * ducked (App ducks before calling this), holds under her voice, blooms when
+ * she finishes, and dissolves near the end of whatever clip is actually there.
+ */
 export function playBoot() {
-  const t = track('boot-music')
+  const t = track('intro-music')
   if (!t) return
+  // Allowed to play again on a re-power — same rule as startAmbient: an
+  // explicit power-up is the one thing that may replay a one-shot.
+  finished.delete('intro-music')
   t.el.currentTime = 0
-  // In fast so the start-up sound lands with the first beat of the boot
-  // sequence rather than easing in under it.
-  set('boot-music', LEVEL['boot-music'], 120)
+  // Fast in — it has to be present from her first syllable.
+  set('intro-music', LEVEL['intro-music'], 120)
   /**
    * Dissolve near the end of whatever clip is actually there.
    *
@@ -188,7 +216,7 @@ export function playBoot() {
     const at = Math.max(500, (secs - 2.6) * 1000)
     dissolve = setTimeout(() => {
       dissolve = null
-      set('boot-music', 0, 2500)
+      set('intro-music', 0, 2500)
     }, at)
   }
   if (t.el.readyState >= 1) arm()
@@ -241,8 +269,10 @@ export function duck(on: boolean) {
   if (ducked === on) return
   ducked = on
   // Down quickly, back up slowly: the drop has to be out of the way before the
-  // first syllable, but a fast recovery is audible as a swell.
-  ;(['ambient', 'work'] as Cue[]).forEach((c) => {
+  // first syllable, but a fast recovery is audible as a swell. The intro cue is
+  // in the list because it now plays under a voice rather than over a silent
+  // animation.
+  ;(['intro-music', 'ambient', 'work'] as Cue[]).forEach((c) => {
     if (tracks.has(c)) fadeTo(c, level(c), on ? 250 : 900)
   })
 }

@@ -55,6 +55,30 @@ const AWAIT_SPEECH_MS = 14000
  *  again to continue a thought. */
 const FOLLOW_UP_MS = 11000
 
+/** When her boot line starts, in ms from power-on. Just past the reactor
+ *  fanfare — the sfx boot cue runs about two and a half seconds — so the cue
+ *  lands on its own and she speaks into its tail as the reticle beats begin. */
+const BOOT_SPEECH_AT = 2400
+
+/**
+ * What she says while the start-up sequence runs — deliberately started
+ * DURING it rather than after it, so the boot animation never plays in
+ * silence and she is still talking as the live HUD lands.
+ *
+ * Long on purpose: at this voice's pace (around 130 wpm) it runs to about
+ * seventeen seconds, well past the ten the sequence needs covering, and the
+ * intro cue blooms under her last words. The old single sentence was over in
+ * three and left four beats of animation playing to nothing.
+ */
+const BOOT_LINE =
+  'Systems online. All subsystems are nominal — power, memory and network ' +
+  'are green, and diagnostics completed without error. The microphone is ' +
+  'open and the language core is standing by. Everything is at your ' +
+  'disposal, sir. Ask me anything.'
+
+/** One sleep, so the boot timeline reads as times rather than promise noise. */
+const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
+
 /** crypto.randomUUID needs a secure context, which a LAN address over plain
  *  http is not. Not worth failing a whole turn over an id. */
 const newId = () =>
@@ -62,8 +86,11 @@ const newId = () =>
   `id${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
 
 /** The same mishearings voice.ts accepts for the wake word — otherwise a turn
- *  that woke him as "travis" gets that word sent on to the model as a question. */
-const NAME = '(?:jarvis|jarvys|jervis|travis|jarviss|java\'s|jarv)'
+ *  that woke him as "trinnity" gets that word sent on to the model as a question.
+ *  One deliberate omission: WAKE also matches "edit" (Chrome hears Edith as
+ *  it), but it is left out here so a real command that starts with the verb —
+ *  "edit this file" — keeps it instead of being stripped down to "this file". */
+const NAME = '(?:edith|ediths|edyth|eddyth|idith|trinity|trinnity|trinitee|jarvis|jarvys|jervis|travis|jarviss|java\'s|jarv)'
 /** A bare vocative — "Jarvis", "hey jarvis" — with nothing asked. */
 const BARE_NAME = new RegExp(`^(?:hey|hi|ok|okay|yo)?\\s*${NAME}[\\s,.!?]*$`, 'i')
 /** A leading vocative on a real command: "Jarvis, what's the weather". */
@@ -137,6 +164,11 @@ export default function App() {
     s.pushTurn({ id: newId(), role: 'user', text: said })
     s.setPhase('thinking')
 
+    // Cut whatever is still talking before taking the floor — her boot line,
+    // the wake greeting, an answer this one supersedes. On the cloud path
+    // every sentence is its own audio element, so a speaker left running is a
+    // second voice audibly overlapping this one.
+    silence()
     const spk = createSpeaker()
     speaker.current = spk
     sfx.duck(true)
@@ -252,13 +284,27 @@ export default function App() {
 
     store.getState().setPhase('waking')
 
+    // Her boot line may still be running — a wake cuts it, the same as any
+    // other speech. Without this the greeting and the monologue talk over
+    // each other on the cloud path.
+    silence()
+
     // Answer to his name. Deliberately NOT awaited any more: the microphone is
     // already open and the echo filter knows his voice, so the user can talk
     // straight over the greeting instead of waiting it out.
     const greeting = createSpeaker()
     speaker.current = greeting
     greeting.say(attention())
-    void greeting.end()
+    void greeting.end().then(() => {
+      // Hand the duck back only while this speaker still owns the floor. It
+      // inherits the duck from the boot line it just cut, so somebody has to
+      // raise the bed again — and if an answer took the floor in the meantime,
+      // that answer's finally block does it instead.
+      if (speaker.current !== greeting) return
+      speaker.current = null
+      music.duck(false)
+      sfx.duck(false)
+    })
 
     listen(AWAIT_SPEECH_MS)
   }
@@ -334,6 +380,11 @@ export default function App() {
       // for the rest of the page, recoverable only by reloading. Reset it and
       // put the button back so the user can simply press it again.
       booting.current = false
+      // The boot line may already be mid-flight — it must not keep talking
+      // over the failure notice, and the bed must not stay ducked beneath it.
+      silence()
+      music.duck(false)
+      sfx.duck(false)
       console.error('[jarvis] power-up failed:', err)
       store.getState().setPhase('offline')
       store
@@ -353,13 +404,52 @@ export default function App() {
     // AudioContext or speech synthesis without a user gesture.
     await sfx.unlockAudio()
     sfx.play('boot')
-    // The score. Must be started from inside this click handler for the same
-    // reason as the rest of the audio.
+    // The beds. Started from inside this click handler for the same reason as
+    // the rest of the audio. The intro cue deliberately is NOT started here —
+    // it belongs with her boot line a couple of seconds down the sequence, so
+    // the reactor fanfare lands on its own first and the track arrives
+    // already ducked under her voice.
     music.enable()
-    music.playBoot()
     music.startAmbient()
 
     s.setPhase('boot')
+
+    // Ask the bridge which speech engines exist NOW rather than after the
+    // sequence — her boot line starts a couple of seconds in and has to use
+    // the cloud voice from its first word when one exists. Never blocks boot:
+    // a slow bridge costs this line the better timbre, not the line, and
+    // keepProbing keeps correcting the choice in the background.
+    const capabilities = probeCapabilities()
+
+    // She speaks THROUGH the start-up sequence instead of waiting for the live
+    // HUD — that overlap is the whole feature. The intro cue starts with her,
+    // already ducked, and blooms when she stops.
+    //
+    // The race gives a slow bridge 1.2s to report its voice first; past that
+    // she starts anyway on the browser voice rather than holding the line for
+    // a health check. The phase guard catches Escape or a failed boot having
+    // taken the sequence away in the meantime.
+    void (async () => {
+      const began = Date.now()
+      await Promise.race([capabilities, wait(1200)])
+      await wait(Math.max(0, BOOT_SPEECH_AT - (Date.now() - began)))
+      if (store.getState().phase !== 'boot') return
+      music.duck(true)
+      sfx.duck(true)
+      music.playBoot()
+      const bootVoice = createSpeaker()
+      speaker.current = bootVoice
+      bootVoice.say(BOOT_LINE)
+      void bootVoice.end().then(() => {
+        // Release the floor — and the duck — only if nobody has taken it from
+        // her. A wake or an answer that cut her off owns the ducking from
+        // here; raising the bed under it would put music on her words.
+        if (speaker.current !== bootVoice) return
+        speaker.current = null
+        music.duck(false)
+        sfx.duck(false)
+      })
+    })()
 
     watchServers((servers) => store.getState().setConnected(servers))
     watchPanels((panel) => store.getState().pushPanel(panel))
@@ -463,9 +553,9 @@ export default function App() {
     })
     const warming = warm().catch((err: Error) => s.setError(err.message))
 
-    if (!usingBridge && !env.anthropicKey) {
+    if (!usingBridge && !env.providerKey) {
       s.setError(
-        'No Anthropic API key — copy .env.example to .env.local and set VITE_ANTHROPIC_API_KEY.',
+        'No provider API key — copy .env.example to .env.local and set VITE_PROVIDER_API_KEY.',
       )
     }
 
@@ -509,10 +599,9 @@ export default function App() {
       )
     }
 
-    // Ask the bridge which speech engines exist before the loop starts, so the
-    // first turn already uses ElevenLabs when a key is present and the browser
-    // fallback when it is not — no flag, no reload.
-    await probeCapabilities()
+    // The probe fired at power-on so her boot line already had its answer;
+    // awaited here too, so the voice loop starts with capabilities settled.
+    await capabilities
 
     // One voice loop, started once, running until the page closes.
     voice.current = await startVoice({
@@ -525,6 +614,12 @@ export default function App() {
     })
 
     store.getState().setPhase('dormant')
+
+    // No greeting here any more. Her line and the intro cue both started with
+    // the sequence, so she is mid-sentence as the HUD lands (or just
+    // finishing), and the boot speaker's own end handler blooms the music when
+    // she does. The mic is already open, so her name said over the tail of it
+    // wakes her exactly as it does the rest of the time.
   }
 
   // -- clap to start --------------------------------------------------------

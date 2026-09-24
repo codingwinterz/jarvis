@@ -19,7 +19,7 @@ import { caps } from './capabilities'
  * conversation that gap is much more noticeable than the timbre.
  *
  * Either way, text is cut at sentence boundaries as it streams in and spoken a
- * sentence at a time, so JARVIS starts talking while Claude is still writing.
+ * sentence at a time, so JARVIS starts talking while the brain is still writing.
  *
  * The queue is an explicit array with a single pump rather than a promise
  * chain. A chain cannot be cut: cancelling mid-sentence left the chain's tail
@@ -62,7 +62,7 @@ const ECHO_TAIL_MS = 1800
  * indistinguishable. This tells them apart at a glance.
  */
 export const diag = {
-  engine: 'system' as 'system' | 'kokoro' | 'elevenlabs',
+  engine: 'system' as 'system' | 'kokoro' | 'elevenlabs' | 'fish',
   /** Utterances handed to an engine — the OS voice or an audio element. */
   spoken: 0,
   /**
@@ -83,7 +83,7 @@ export const diag = {
   lastError: '',
   /** Set once the OS voice has proved unusable; the cloud voice takes over. */
   nativeBroken: false,
-  /** Sentences rescued by the bridge's ElevenLabs proxy. */
+  /** Sentences rescued by the bridge's speech proxy. */
   rescued: 0,
   voice: '',
   lastText: '',
@@ -104,11 +104,28 @@ if (typeof window !== 'undefined') {
 let nativeBroken = false
 
 let speakingAt = 0
+/** When the speakers last stopped — read by msSinceSpeech below. */
+let lastSpokenAt = 0
 
 /** When the current sentence started, or 0 if nothing is being spoken. The
  *  voice loop uses this to refuse to interrupt him in his own first syllable. */
 export function speakingSince(): number {
   return speaking ? speakingAt : 0
+}
+
+/**
+ * Milliseconds since the speakers last stopped — Infinity while nothing has
+ * ever played.
+ *
+ * The voice loop needs this because by the time a segment reaches the
+ * transcriber there may be no sentence left to compare it against: the echo
+ * tail has expired and the transcript is all that remains of a sound nobody
+ * made. This is the clock that decides whether such a transcript is an
+ * artefact — see isPhantom in voice.ts.
+ */
+export function msSinceSpeech(): number {
+  if (speaking) return Date.now() - speakingAt
+  return lastSpokenAt ? Date.now() - lastSpokenAt : Infinity
 }
 
 function setSpeaking(text: string) {
@@ -120,6 +137,7 @@ function setSpeaking(text: string) {
   if (speaking) {
     recent = speaking
     recentUntil = Date.now() + ECHO_TAIL_MS
+    lastSpokenAt = Date.now()
   }
   speaking = ''
 }
@@ -244,7 +262,8 @@ function pickVoice(): SpeechSynthesisVoice | null {
  *  always naming a speechSynthesis voice that a cloud or neural engine has
  *  quietly replaced. */
 export function currentVoiceName(): string {
-  if (USE_ELEVENLABS || caps().tts) return 'ElevenLabs'
+  if (caps().tts) return caps().voice === 'fish' ? 'Fish Audio' : 'ElevenLabs'
+  if (USE_ELEVENLABS) return 'ElevenLabs'
   if (TTS_ENGINE === 'kokoro' && !kokoro.isUnavailable()) {
     return KOKORO_VOICE.replace(/^bm_/, '')
   }
@@ -384,7 +403,7 @@ export function createSpeaker(): Speaker {
       // for a session that had spoken every one of its sentences through
       // ElevenLabs, which makes the one field naming the engine useless
       // exactly when you are trying to work out which engine is at fault.
-      diag.engine = 'elevenlabs'
+      diag.engine = caps().voice === 'fish' ? 'fish' : 'elevenlabs'
       return fetchCloudAudio(text).catch(() => null)
     }
     if (TTS_ENGINE === 'kokoro' && !kokoro.isUnavailable()) {
@@ -446,7 +465,7 @@ export function createSpeaker(): Speaker {
       if (!nativeBroken) {
         nativeBroken = true
         diag.nativeBroken = true
-        diag.engine = 'elevenlabs'
+        diag.engine = caps().voice === 'fish' ? 'fish' : 'elevenlabs'
         console.warn('[jarvis] system voice is not producing sound — using the bridge speech proxy from here on')
       }
       const rescue = await fetchCloudAudio(item.text).catch(() => null)
@@ -591,7 +610,8 @@ export function createSpeaker(): Speaker {
       // see the onplaying handler below.
       diag.spoken++
       diag.lastText = text.slice(0, 60)
-      diag.voice = diag.engine === 'kokoro' ? KOKORO_VOICE : 'ElevenLabs'
+      diag.voice =
+        diag.engine === 'kokoro' ? KOKORO_VOICE : diag.engine === 'fish' ? 'Fish Audio' : 'ElevenLabs'
 
       let read: (() => number) | null = null
       const ctx = outputContext()

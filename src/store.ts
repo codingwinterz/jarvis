@@ -138,7 +138,7 @@ export type UiState = {
     transcript: boolean   // the conversation log
     toolBadge: boolean    // the active-tool readout under the reactor
     suggestions: boolean  // the "try saying…" hint
-    brand: boolean        // the J.A.R.V.I.S. wordmark + status
+    brand: boolean        // the T.R.I.N.I.T.Y. wordmark + status
   }
   effect: UiEffect | null
 }

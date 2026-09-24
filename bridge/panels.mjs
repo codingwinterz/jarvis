@@ -1,22 +1,18 @@
-import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk'
-import { z } from 'zod'
-import { probeUrl } from './page.mjs'
+// TRINITY's screen.
+//
+// Rather than filling in a fixed set of card templates, the model authors the
+// panel itself: markup, layout, emphasis, and which animation it arrives with.
+// A search result and a phone screenshot and a revenue figure should not look
+// like the same component with different words in it, and only the thing
+// composing the answer knows what the answer wants to look like.
+//
+// What's fixed is the design system below, so everything it builds still looks
+// like one interface. The browser sanitises the markup before it renders.
+//
+// These tools run in-process, so a handler pushes straight down the open
+// WebSocket — no round trip, no temp file.
 
-/**
- * The `display` tool — JARVIS's screen.
- *
- * Rather than filling in a fixed set of card templates, the model authors the
- * panel itself: markup, layout, emphasis, and which animation it arrives with.
- * A search result and a phone screenshot and a revenue figure should not look
- * like the same component with different words in it, and only the thing
- * composing the answer knows what the answer wants to look like.
- *
- * What's fixed is the design system below, so everything it builds still looks
- * like one interface. The browser sanitises the markup before it renders.
- *
- * It runs in-process (an SDK MCP server, not a subprocess), so the handler
- * pushes straight down the open WebSocket — no round trip, no temp file.
- */
+import { probeUrl } from './page.mjs'
 
 const DESIGN_SYSTEM = `
 LAYOUT CLASSES — compose these, and use NOTHING else. The renderer strips any
@@ -64,17 +60,14 @@ PICTURES AND VIDEO — these work. Use them.
     A guessed address is a broken image, and a broken image is worse than none.
 
 WHERE THE CONTENT COMES FROM — read this before showing anything from the web.
-  - Fetch with exa. crawling_exa and web_fetch_exa return the page's actual
-    text and its image URLs; deep_search_exa and web_search_advanced_exa
-    return content alongside the results. That returned content is what you
-    render — rewritten into these classes, in your own words and this interface's
-    shape. You are not linking to an article, you are showing it.
+  - Fetch with web_search and fetch_page. fetch_page returns the page's actual
+    text; that returned content is what you render — rewritten into these
+    classes, in your own words and this interface's shape. You are not linking
+    to an article, you are showing it.
   - Do NOT put a bare source URL on screen and leave the page to fetch it for
     itself. Half the web refuses that: news CDNs answer 403 to anything that
-    is not their own page, and the panel renders as an empty rectangle. Going
-    through exa is what makes the difference between an article appearing and a
-    blank card.
-  - So: asked about a page, crawl it, then panel the substance — the headline,
+    is not their own page, and the panel renders as an empty rectangle.
+  - So: asked about a page, fetch it, then panel the substance — the headline,
     the two or three lines that matter, the figure, the photograph.
   - Image URLs that came back IN a tool result are real and will render; the
     bridge fetches them server-side. An image URL you inferred or assembled
@@ -98,8 +91,8 @@ EXAMPLES
 
 Search results:
 <div class="hud-rows">
-  <div class="hud-row"><span class="hud-idx">01</span><span class="hud-main"><span class="hud-label">Anthropic ships Claude Opus 5</span><span class="hud-sub">A step change on agentic coding</span></span><span class="hud-tag">reuters</span></div>
-  <div class="hud-row"><span class="hud-idx">02</span><span class="hud-main"><span class="hud-label">OpenAI responds within the week</span></span><span class="hud-tag">verge</span></div>
+  <div class="hud-row"><span class="hud-idx">01</span><span class="hud-main"><span class="hud-label">NVIDIA ships Nemotron 3</span><span class="hud-sub">A step change on agentic reasoning</span></span><span class="hud-tag">reuters</span></div>
+  <div class="hud-row"><span class="hud-idx">02</span><span class="hud-main"><span class="hud-label">Groq doubles LPU capacity</span></span><span class="hud-tag">verge</span></div>
 </div>
 
 A single figure:
@@ -138,52 +131,6 @@ A short readout:
 <p class="hud-note">Three of the four services are nominal. <span class="hud-hot">Vercel is degraded</span> in eu-west.</p>
 `.trim()
 
-const schema = {
-  title: z
-    .string()
-    .describe('Short heading for the panel, two to four words. e.g. "SEARCH RESULTS", "INBOX".'),
-  html: z
-    .string()
-    .describe(
-      'The panel body as an HTML fragment, composed using the design system in ' +
-        'this tool description. Author it for the specific content — a list, an ' +
-        'image, a number and a caption, whatever fits.',
-    ),
-  anim: z
-    .enum(['materialise', 'sweep', 'unfold', 'stagger', 'snap'])
-    .default('materialise')
-    .describe(
-      'How it arrives. materialise = scan-wipe reveal, the default. ' +
-        'sweep = slides in from the edge, good for results. ' +
-        'unfold = expands vertically, good for images. ' +
-        'stagger = children land one after another, good for lists. ' +
-        'snap = instant with a flicker, good for alerts and single figures.',
-    ),
-  slot: z
-    .enum(['right', 'left', 'wide'])
-    .default('right')
-    .describe(
-      'Where it sits. right = the default stack beside the reactor. ' +
-        'left = the opposite side, for a second simultaneous panel. ' +
-        'wide = a broader card under the reactor, for images or dense tables.',
-    ),
-  accent: z
-    .enum(['default', 'amber', 'violet', 'green', 'red'])
-    .default('default')
-    .describe(
-      'Colour identity. default = the interface cyan. amber = caution or ' +
-        'pending. violet = generated or synthetic content. green = confirmed ' +
-        'or healthy. red = failure or alert. Use it meaningfully, not decoratively.',
-    ),
-  hold: z
-    .enum(['turn', 'sticky'])
-    .default('turn')
-    .describe(
-      'turn = clears when the user next speaks, the default. ' +
-        'sticky = stays until replaced; use only when the user will refer back to it.',
-    ),
-}
-
 const DESCRIPTION = `Put something on the JARVIS heads-up display.
 
 You are designing the panel, not filling in a template — compose the markup for
@@ -205,17 +152,46 @@ stays one or two sentences even when the panel is dense.
 
 ${DESIGN_SYSTEM}`
 
-/**
- * Panel ids are React keys and they arrive in bursts, so `Date.now()` alone
- * collides. A random suffix looked like it solved that but was written
- * unpadded, so `p1700000000001` (from suffix 1) and `p170000000000` + `1`
- * are the same string. A counter is simply unique.
- */
-let seq = 0
-
-// ---------------------------------------------------------------------------
-// Blades
-// ---------------------------------------------------------------------------
+const parameters = {
+  type: 'object',
+  properties: {
+    title: {
+      type: 'string',
+      description: 'Short heading for the panel, two to four words. e.g. "SEARCH RESULTS", "INBOX".',
+    },
+    html: {
+      type: 'string',
+      description:
+        'The panel body as an HTML fragment, composed using the design system in ' +
+        'this tool description. Author it for the specific content — a list, an ' +
+        'image, a number and a caption, whatever fits.',
+    },
+    slot: {
+      type: 'string',
+      enum: ['right', 'left', 'wide'],
+      description:
+        'Where it sits. right = the default stack beside the reactor. ' +
+        'left = the opposite side, for a second simultaneous panel. ' +
+        'wide = a broader card under the reactor, for images or dense tables. Default right.',
+    },
+    accent: {
+      type: 'string',
+      enum: ['default', 'amber', 'violet', 'green', 'red'],
+      description:
+        'Colour identity. default = the interface cyan. amber = caution or ' +
+        'pending. violet = generated or synthetic content. green = confirmed ' +
+        'or healthy. red = failure or alert. Default default.',
+    },
+    hold: {
+      type: 'string',
+      enum: ['turn', 'sticky'],
+      description:
+        'turn = clears when the user next speaks, the default. ' +
+        'sticky = stays until replaced; use only when the user will refer back to it.',
+    },
+  },
+  required: ['title', 'html'],
+}
 
 const BLADE_DESCRIPTION = `Open something on the blades — the big surface.
 
@@ -255,46 +231,50 @@ extension, and a link that looks like a video is usually a page about one.
 Never open a blade the user did not ask for and does not need. One blade that
 answers the question beats three that surround it.`
 
-const bladeSchema = {
-  title: z
-    .string()
-    .describe('Two to four words naming what this is, e.g. "REUTERS" or "MARK VII".'),
-  kind: z
-    .enum(['article', 'image', 'gallery', 'video', 'embed', 'markup', 'camera'])
-    .describe('What is being opened. See the tool description.'),
-  url: z
-    .string()
-    .optional()
-    .catch(undefined)
-    .describe(
-      'The address, for article / image / video / embed. Use a URL that ' +
+const bladeParameters = {
+  type: 'object',
+  properties: {
+    title: {
+      type: 'string',
+      description: 'Two to four words naming what this is, e.g. "REUTERS" or "MARK VII".',
+    },
+    kind: {
+      type: 'string',
+      enum: ['article', 'image', 'gallery', 'video', 'embed', 'markup', 'camera'],
+      description: 'What is being opened. See the tool description.',
+    },
+    url: {
+      type: 'string',
+      description:
+        'The address, for article / image / video / embed. Use a URL that ' +
         'appeared verbatim in a tool result — never one you assembled yourself.',
-    ),
-  images: z
-    .array(z.string())
-    .optional()
-    .catch(undefined)
-    .describe('Image URLs, for kind "gallery". Four is a good number, eight the most.'),
-  html: z
-    .string()
-    .optional()
-    .catch(undefined)
-    .describe('Your own markup, for kind "markup", in the .hud-* design system.'),
-  mode: z
-    .enum(['reader', 'live'])
-    .optional()
-    .catch(undefined)
-    .describe('For kind "article": reader = the words restyled, live = the real page.'),
-  size: z
-    .enum(['compact', 'tall', 'wide', 'full'])
-    .optional()
-    .catch(undefined)
-    .describe('tall = a reading column. wide = pictures and tables. full = the screen.'),
-  hold: z
-    .enum(['turn', 'sticky'])
-    .optional()
-    .catch(undefined)
-    .describe('turn = closes when the user next speaks. sticky = stays until replaced.'),
+    },
+    images: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Image URLs, for kind "gallery". Four is a good number, eight the most.',
+    },
+    html: {
+      type: 'string',
+      description: 'Your own markup, for kind "markup", in the .hud-* design system.',
+    },
+    mode: {
+      type: 'string',
+      enum: ['reader', 'live'],
+      description: 'For kind "article": reader = the words restyled, live = the real page.',
+    },
+    size: {
+      type: 'string',
+      enum: ['compact', 'tall', 'wide', 'full'],
+      description: 'tall = a reading column. wide = pictures and tables. full = the screen.',
+    },
+    hold: {
+      type: 'string',
+      enum: ['turn', 'sticky'],
+      description: 'turn = closes when the user next speaks. sticky = stays until replaced.',
+    },
+  },
+  required: ['title', 'kind'],
 }
 
 const PROBE_DESCRIPTION = `Find out what is actually at a URL before showing it.
@@ -313,58 +293,52 @@ the bytes — it does not know whether the user asked to read this or merely to
 see it, what is already on screen, or whether the point was the picture or the
 argument. You know those things. Overrule it whenever you have reason to.`
 
+const probeParameters = {
+  type: 'object',
+  properties: {
+    url: { type: 'string', description: 'The absolute URL to inspect.' },
+  },
+  required: ['url'],
+}
+
+const refuse = (text) => ({ isError: true, content: [{ type: 'text', text }] })
+const ok = (text) => ({ content: [{ type: 'text', text }] })
+
 /**
- * @param {(panel: object) => void} emit - pushes the panel to the browser
- * @param {(blade: object) => void} emitBlade - pushes a blade to the browser
+ * Panel ids are React keys and they arrive in bursts, so `Date.now()` alone
+ * collides. A counter is simply unique.
  */
-export function displayServer(emit, emitBlade) {
-  return createSdkMcpServer({
-    name: 'jarvis',
-    version: '1.0.0',
-    instructions:
-      'The JARVIS heads-up display. Use `display` to put content on screen ' +
-      'alongside what you say.',
-    // Never defer this behind tool search — if the model has to go looking for
-    // it, it won't occur to it to show anything.
-    alwaysLoad: true,
-    tools: [
-      tool('display', DESCRIPTION, schema, async (args) => {
+let seq = 0
+
+/**
+ * @param {{ emitBlade: (blade: object) => void }} io
+ */
+export function displayTools({ emitBlade }) {
+  return [
+    {
+      name: 'display',
+      description: DESCRIPTION,
+      parameters,
+      async execute(args) {
         // Refuse rather than warn. Emitting anyway put a blank card on screen
         // and told the model nothing, so it had no reason to try again; handed
         // back as an error it gets one more go with actual content in it.
         //
         // The media test counts video and iframe as well as img, because a
-        // panel whose whole point is a playable result carries no text at all —
-        // rejecting it would refuse the one thing this tool was just taught to
-        // do. <source> counts too: a <video> is often written with its src on
-        // the child element rather than the parent.
+        // panel whose whole point is a playable result carries no text at all.
         const text = String(args.html ?? '').replace(/<[^>]*>/g, '').trim()
         if (!text && !/<(img|video|iframe|source)\b/i.test(args.html ?? '')) {
-          console.warn('[jarvis] display called with an empty body:', args.title)
-          return {
-            isError: true,
-            content: [
-              {
-                type: 'text',
-                text:
-                  'Not shown: the panel body was empty. A panel needs visible ' +
-                  'text or an image — call display again with the content ' +
-                  'composed into the html argument.',
-              },
-            ],
-          }
+          console.warn('[trinity] display called with an empty body:', args.title)
+          return refuse(
+            'Not shown: the panel body was empty. A panel needs visible ' +
+              'text or an image — call display again with the content ' +
+              'composed into the html argument.',
+          )
         }
         /**
-         * Composed markup opens as a blade, not as a card.
-         *
-         * There is one surface now. A second place for things to appear meant
-         * the user had two places to look and the model had a decision to make
-         * every time it wanted to show something — and it made that decision
-         * on grounds it could not possibly know, since only the person looking
-         * at the screen knows whether they are glancing or reading.
-         *
-         * The tool keeps its name and its design system because the model is
-         * fluent in both; only where the result lands has changed.
+         * Composed markup opens as a blade, not as a card. There is one
+         * surface now; the tool keeps its name and design system because the
+         * model is fluent in both, only where the result lands has changed.
          */
         emitBlade({
           id: `p${Date.now().toString(36)}-${(seq++).toString(36)}`,
@@ -374,10 +348,15 @@ export function displayServer(emit, emitBlade) {
           size: args.slot === 'wide' ? 'wide' : 'compact',
           hold: args.hold ?? 'turn',
         })
-        return { content: [{ type: 'text', text: 'On screen.' }] }
-      }),
+        return ok('On screen.')
+      },
+    },
 
-      tool('blade', BLADE_DESCRIPTION, bladeSchema, async (args) => {
+    {
+      name: 'blade',
+      description: BLADE_DESCRIPTION,
+      parameters: bladeParameters,
+      async execute(args) {
         const kind = args.kind
         const url = String(args.url ?? '').trim()
         const images = Array.isArray(args.images) ? args.images.filter(Boolean) : []
@@ -404,26 +383,23 @@ export function displayServer(emit, emitBlade) {
           html: args.html || undefined,
           mode: args.mode ?? 'reader',
           // A reading column for anything meant to be read, a broad frame for
-          // anything meant to be looked at. Getting this wrong is the difference
-          // between an article you can follow and one in a letterbox.
+          // anything meant to be looked at.
           size: args.size ?? (kind === 'article' ? 'tall' : 'wide'),
           hold: args.hold ?? 'turn',
         }
         emitBlade(blade)
-        return { content: [{ type: 'text', text: `Open on the blades as "${blade.title}".` }] }
-      }),
+        return ok(`Open on the blades as "${blade.title}".`)
+      },
+    },
 
-      tool(
-        'probe_url',
-        PROBE_DESCRIPTION,
-        { url: z.string().describe('The absolute URL to inspect.') },
-        async (args) => {
-          const report = await probeUrl(String(args.url ?? ''))
-          return { content: [{ type: 'text', text: JSON.stringify(report, null, 1) }] }
-        },
-      ),
-    ],
-  })
+    {
+      name: 'probe_url',
+      description: PROBE_DESCRIPTION,
+      parameters: probeParameters,
+      async execute(args) {
+        const report = await probeUrl(String(args.url ?? ''))
+        return ok(JSON.stringify(report, null, 1))
+      },
+    },
+  ]
 }
-
-const refuse = (text) => ({ isError: true, content: [{ type: 'text', text }] })

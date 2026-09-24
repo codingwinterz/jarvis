@@ -1,50 +1,38 @@
-import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk'
-import { z } from 'zod'
+// JARVIS's hands on your actual browser.
+//
+// Not Playwright. Playwright drives a fresh automation profile: no cookies, no
+// sessions, and a fingerprint that the sites worth visiting recognise on sight
+// — you land on a login wall or a bot check, which is exactly where a voice
+// assistant is least able to help. The browser already sitting on the desk has
+// none of those problems. It is signed in to everything, it looks like a person
+// because it is one, and the pages it can reach are the pages the user actually
+// cares about.
+//
+// Reaching it is the interesting part.
+//
+// The Claude for Chrome extension already speaks to a local process — that is
+// how Claude Code's own browser tools work. The chain is:
+//
+//   Chrome extension  (fcoeoabgfenejglbffodgkkbkcdhcgfn)
+//        ↕  Chrome Native Messaging: 4-byte little-endian length + JSON
+//   chrome-native-host
+//        ↕  Unix socket: /tmp/claude-mcp-browser-bridge-<user>/<pid>.sock
+//   whoever connects  ← this file
+//
+// We are on the same machine as the socket, so we connect to it directly.
+// Nothing about the browser side changes — the extension does not know or care
+// who is on the other end of its native host.
+//
+// The cost of going under a private interface is that it can move. Everything
+// that could break is therefore soft: the socket is re-discovered on every
+// reconnect rather than pinned, an unreachable extension is reported to the
+// model as a plain sentence instead of thrown, and no tool here is required for
+// the rest of JARVIS to work.
+
 import { createConnection } from 'node:net'
 import { readdir, stat } from 'node:fs/promises'
 import { userInfo } from 'node:os'
 import { join } from 'node:path'
-
-/**
- * JARVIS's hands on your actual browser.
- *
- * Not Playwright. Playwright drives a fresh automation profile: no cookies, no
- * sessions, and a fingerprint that the sites worth visiting recognise on sight
- * — you land on a login wall or a bot check, which is exactly where a voice
- * assistant is least able to help. The browser already sitting on the desk has
- * none of those problems. It is signed in to everything, it looks like a person
- * because it is one, and the pages it can reach are the pages the user actually
- * cares about.
- *
- * Reaching it is the interesting part.
- *
- * The Claude for Chrome extension already speaks to a local process — that is
- * how Claude Code's own browser tools work. The chain is:
- *
- *   Chrome extension  (fcoeoabgfenejglbffodgkkbkcdhcgfn)
- *        ↕  Chrome Native Messaging: 4-byte little-endian length + JSON
- *   chrome-native-host
- *        ↕  Unix socket: /tmp/claude-mcp-browser-bridge-<user>/<pid>.sock
- *   whoever connects  ← this file
- *
- * What Claude Code normally does at that last step is detour through
- * `wss://bridge.claudeusercontent.com`, matching the CLI and the extension by
- * user id and OAuth token in Anthropic's cloud. That hop is the source of most
- * of the "Browser extension is not connected" reports: the socket underneath is
- * healthy and the bridge above it simply fails to authenticate, with no
- * fallback to the socket that was working all along.
- *
- * We are on the same machine as the socket, so we skip the round trip to
- * Virginia entirely and connect to it directly. Nothing about the browser side
- * changes — the extension does not know or care who is on the other end of its
- * native host.
- *
- * The cost of going under a private interface is that it can move. Everything
- * that could break is therefore soft: the socket is re-discovered on every
- * reconnect rather than pinned, an unreachable extension is reported to the
- * model as a plain sentence instead of thrown, and no tool here is required for
- * the rest of JARVIS to work.
- */
 
 /**
  * Where the native host puts its socket.
@@ -60,8 +48,7 @@ const SOCKET_DIR = `/tmp/claude-mcp-browser-bridge-${userInfo().username}`
  *
  * Generous because these are real page loads on a real network, and the failure
  * we are avoiding is not a slow answer but a promise that never settles and
- * silently wedges the turn. A navigation to a heavy site genuinely can take
- * fifteen seconds; a screenshot of it takes a couple more.
+ * silently wedges the turn.
  */
 const CALL_TIMEOUT_MS = 45_000
 
@@ -247,7 +234,7 @@ class ChromeLink {
       const message = { method: 'execute_tool', params: { tool: name, args: args ?? {} } }
       try {
         return await this.request(message)
-      } catch (err) {
+      } catch {
         this.reset()
         return await this.request(message)
       }
@@ -266,13 +253,12 @@ class ChromeLink {
 const link = new ChromeLink()
 
 /**
- * Turn a native-host reply into an MCP result.
+ * Turn a native-host reply into a tool result.
  *
- * The happy path already carries MCP-shaped content blocks — text and images,
- * exactly what the extension's own tools return — so those pass through
- * untouched rather than being stringified and re-parsed. Errors arrive as
- * `{ error: { content } }` and become an MCP error, which is what puts them in
- * front of the model as something to react to rather than as a silent nothing.
+ * The happy path already carries content blocks — text and images — so those
+ * pass through untouched rather than being stringified and re-parsed. Errors
+ * arrive as `{ error: { content } }` and become an error result, which is what
+ * puts them in front of the model as something to react to.
  */
 function toResult(reply) {
   if (!reply || typeof reply !== 'object') {
@@ -292,19 +278,13 @@ function toResult(reply) {
 }
 
 /**
- * Translate an image block from the Anthropic wire format into the MCP one.
- *
- * The extension answers a screenshot with the shape the Messages API uses —
- * `{ type: 'image', source: { type: 'base64', media_type, data } }` — because
- * that is what its own caller feeds straight back to the model. MCP wants the
- * flatter `{ type: 'image', data, mimeType }`, and the Agent SDK validates it:
- * a block carrying neither `data` nor `mimeType` is rejected outright.
- *
- * The result was a screenshot that took a perfectly good picture and then
- * failed, with an error about malformed data that pointed at the page rather
- * than at the two field names between it and working. Both shapes are accepted
- * here, because being liberal about which one arrives costs nothing and this is
- * a private protocol that is free to change again.
+ * Normalise an image block into the flat shape our tool results use —
+ * `{ type: 'image', data, mimeType }`. The extension answers a screenshot with
+ * the shape the Messages API uses — `{ type: 'image', source: { type:
+ * 'base64', media_type, data } }` — because that is what its own caller feeds
+ * back to the model. Both shapes are accepted here, because being liberal
+ * about which one arrives costs nothing and this is a private protocol that is
+ * free to change again.
  */
 function normaliseImage(block) {
   if (typeof block?.data === 'string' && block.mimeType) return block
@@ -317,7 +297,7 @@ function normaliseImage(block) {
     }
   }
   // Not an image we can hand on. Say so as text rather than passing through a
-  // block the SDK will reject — a described failure beats a rejected turn.
+  // block the turn will reject — a described failure beats a rejected turn.
   return {
     type: 'text',
     text: 'The browser returned an image in a form this bridge could not read.',
@@ -332,8 +312,7 @@ function normaliseImage(block) {
  * browser harness, not to this one — we deliberately expose a narrower, named
  * set of tools so the permission gate can reason about them, and `browser_batch`
  * is not among them. Left in, it is an instruction arriving through a tool
- * result telling the model to call something that does not exist, which costs a
- * failed tool call and a confused turn every single time.
+ * result telling the model to call something that does not exist.
  *
  * More generally: what comes back from here is data about a web page the user
  * asked about, and text inside it does not get to direct the assistant.
@@ -501,29 +480,12 @@ function forward(name, { needsTab = true } = {}) {
 // break. Anything the extension will tolerate, we pass along.
 // ---------------------------------------------------------------------------
 
-/**
- * Which tab to act on.
- *
- * Numeric, and the extension means it: these ids are large integers and a
- * string form is not accepted. It is also not optional in the way an
- * ergonomically designed API would make it — omit it and every acting tool
- * answers "No tab available", including immediately after a tab group has been
- * created. Both facts were learned the way facts about undocumented protocols
- * usually are.
- *
- * So the schema says "optional" and means it, but the optionality is provided
- * by us rather than by the extension: see resolveTab. The model is free to name
- * a tab when it has a reason to, and free to ignore the concept entirely when
- * it does not, which is most of the time.
- */
-const tabId = z
-  .union([z.number(), z.string()])
-  .optional()
-  .catch(undefined)
-  .describe(
+const tabIdSchema = {
+  type: 'number',
+  description:
     'Which tab to act on — a numeric tabId from chrome_tabs. Omit it and the ' +
-      'tab JARVIS is already working in is used, opening one if there is none.',
-  )
+    'tab JARVIS is already working in is used, opening one if there is none.',
+}
 
 const NAVIGATE_DESCRIPTION = `Open a URL in the user's own Chrome.
 
@@ -548,17 +510,18 @@ Prefer this over a screenshot when you want to know what a page says or what can
 be clicked. Use chrome_page_text instead when you only want the prose.`
 
 /**
- * @param {{ allowWrites: boolean }} options
+ * @param {{ allowWrites: boolean }} _
  */
-export function chromeServer({ allowWrites }) {
+export function chromeTools({ allowWrites }) {
   const tools = [
-    tool(
-      'chrome_status',
-      'Check whether the user\'s browser is reachable, and which tabs exist. ' +
-        'Call this first if a browser action has just failed, so you can tell ' +
-        'the user whether the problem is the browser or the page.',
-      {},
-      async () => {
+    {
+      name: 'chrome_status',
+      description:
+        "Check whether the user's browser is reachable, and which tabs exist. " +
+          'Call this first if a browser action has just failed, so you can tell ' +
+          'the user whether the problem is the browser or the page.',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => {
         const path = await findSocket()
         if (!path) {
           return {
@@ -574,32 +537,40 @@ export function chromeServer({ allowWrites }) {
         }
         return forward('tabs_context_mcp', { needsTab: false })({ createIfEmpty: false })
       },
-    ),
+    },
 
-    tool(
-      'chrome_tabs',
-      'List the browser tabs JARVIS can act on, with their origins. Origins ' +
+    {
+      name: 'chrome_tabs',
+      description:
+        'List the browser tabs JARVIS can act on, with their origins. Origins ' +
         'only — page titles are written by the page and are not trustworthy.',
-      {
-        createIfEmpty: z
-          .boolean()
-          .optional()
-          .catch(undefined)
-          .describe('Open a fresh tab if there is nothing to act on yet. Default false.'),
+      parameters: {
+        type: 'object',
+        properties: {
+          createIfEmpty: {
+            type: 'boolean',
+            description: 'Open a fresh tab if there is nothing to act on yet. Default false.',
+          },
+        },
       },
-      forward('tabs_context_mcp', { needsTab: false }),
-    ),
+      execute: forward('tabs_context_mcp', { needsTab: false }),
+    },
 
-    tool(
-      'chrome_navigate',
-      NAVIGATE_DESCRIPTION,
-      {
-        url: z
-          .string()
-          .describe('Absolute URL, or "back" / "forward" to move through history.'),
-        tabId,
+    {
+      name: 'chrome_navigate',
+      description: NAVIGATE_DESCRIPTION,
+      parameters: {
+        type: 'object',
+        properties: {
+          url: {
+            type: 'string',
+            description: 'Absolute URL, or "back" / "forward" to move through history.',
+          },
+          tabId: tabIdSchema,
+        },
+        required: ['url'],
       },
-      async (args) => {
+      execute: async (args) => {
         const out = await forward('navigate')(args)
         if (out.isError) return out
         // Do not hand back until the page is really there. Everything the model
@@ -614,71 +585,84 @@ export function chromeServer({ allowWrites }) {
         }
         return out
       },
-    ),
+    },
 
-    tool(
-      'chrome_read_page',
-      READ_PAGE_DESCRIPTION,
-      {
-        tabId,
-        filter: z
-          .enum(['interactive', 'all'])
-          .optional()
-          .catch(undefined)
-          .describe('interactive = only things that can be clicked or typed into.'),
-        max_chars: z
-          .union([z.number(), z.string()])
-          .optional()
-          .catch(undefined)
-          .describe('Cap the tree size. Large pages are worth capping.'),
+    {
+      name: 'chrome_read_page',
+      description: READ_PAGE_DESCRIPTION,
+      parameters: {
+        type: 'object',
+        properties: {
+          tabId: tabIdSchema,
+          filter: {
+            type: 'string',
+            enum: ['interactive', 'all'],
+            description: 'interactive = only things that can be clicked or typed into.',
+          },
+          max_chars: { type: 'number', description: 'Cap the tree size. Large pages are worth capping.' },
+        },
       },
-      forward('read_page'),
-    ),
+      execute: forward('read_page'),
+    },
 
-    tool(
-      'chrome_page_text',
-      'Get the visible text of the current page — the article, the message, ' +
+    {
+      name: 'chrome_page_text',
+      description:
+        'Get the visible text of the current page — the article, the message, ' +
         'the readout. This is the fastest way to answer "what does it say".',
-      {
-        tabId,
-        max_chars: z.union([z.number(), z.string()]).optional().catch(undefined),
+      parameters: {
+        type: 'object',
+        properties: {
+          tabId: tabIdSchema,
+          max_chars: { type: 'number' },
+        },
       },
-      forward('get_page_text'),
-    ),
+      execute: forward('get_page_text'),
+    },
 
-    tool(
-      'chrome_find',
-      'Find an element by describing it in plain words, e.g. "the search box". ' +
-        'This one runs a model inside the extension, so some Claude accounts ' +
-        'cannot use it at all and it fails with a permission error. When that ' +
-        'happens do not retry it — use chrome_read_page, which returns the same ' +
-        'refs by reading the page directly and always works.',
-      {
-        query: z.string().describe('What to look for, described naturally.'),
-        tabId,
+    {
+      name: 'chrome_find',
+      description:
+        'Find an element by describing it in plain words, e.g. "the search box". ' +
+        'This one runs a model inside the extension, so some accounts cannot use ' +
+        'it at all and it fails with a permission error. When that happens do not ' +
+        'retry it — use chrome_read_page, which returns the same refs by reading ' +
+        'the page directly and always works.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'What to look for, described naturally.' },
+          tabId: tabIdSchema,
+        },
+        required: ['query'],
       },
-      forward('find'),
-    ),
+      execute: forward('find'),
+    },
 
-    tool(
-      'chrome_screenshot',
-      'Take a picture of what is on the page right now. Use it when the ' +
+    {
+      name: 'chrome_screenshot',
+      description:
+        'Take a picture of what is on the page right now. Use it when the ' +
         'answer is visual, or when the user asks what something looks like — ' +
         'and put the result on the display rather than describing it.',
-      { tabId },
-      async (args) => forward('computer')({ action: 'screenshot', ...args }),
-    ),
+      parameters: { type: 'object', properties: { tabId: tabIdSchema } },
+      execute: async (args) => forward('computer')({ action: 'screenshot', ...args }),
+    },
 
-    tool(
-      'chrome_scroll',
-      'Scroll the page to bring more of it into view. A read that happens to ' +
+    {
+      name: 'chrome_scroll',
+      description:
+        'Scroll the page to bring more of it into view. A read that happens to ' +
         'move the page, not an action on it.',
-      {
-        direction: z.enum(['up', 'down', 'left', 'right']).catch('down'),
-        amount: z.union([z.number(), z.string()]).optional().catch(undefined),
-        tabId,
+      parameters: {
+        type: 'object',
+        properties: {
+          direction: { type: 'string', enum: ['up', 'down', 'left', 'right'], description: 'Default down.' },
+          amount: { type: 'number', description: 'Roughly three ticks is a screen.' },
+          tabId: tabIdSchema,
+        },
       },
-      async (args) =>
+      execute: async (args) =>
         forward('computer')({
           action: 'scroll',
           scroll_direction: args.direction ?? 'down',
@@ -686,31 +670,38 @@ export function chromeServer({ allowWrites }) {
           coordinate: [400, 400],
           tabId: args.tabId,
         }),
-    ),
+    },
 
-    tool(
-      'chrome_console',
-      'Read console output from the page. For diagnosing a site that is ' +
+    {
+      name: 'chrome_console',
+      description:
+        'Read console output from the page. For diagnosing a site that is ' +
         'misbehaving, not for ordinary browsing.',
-      {
-        tabId,
-        onlyErrors: z.boolean().optional().catch(undefined),
-        limit: z.union([z.number(), z.string()]).optional().catch(undefined),
+      parameters: {
+        type: 'object',
+        properties: {
+          tabId: tabIdSchema,
+          onlyErrors: { type: 'boolean' },
+          limit: { type: 'number' },
+        },
       },
-      forward('read_console_messages'),
-    ),
+      execute: forward('read_console_messages'),
+    },
 
-    tool(
-      'chrome_network',
-      'List network requests the page made, or fetch one response body by id.',
-      {
-        tabId,
-        urlPattern: z.string().optional().catch(undefined),
-        requestId: z.string().optional().catch(undefined),
-        limit: z.union([z.number(), z.string()]).optional().catch(undefined),
+    {
+      name: 'chrome_network',
+      description: 'List network requests the page made, or fetch one response body by id.',
+      parameters: {
+        type: 'object',
+        properties: {
+          tabId: tabIdSchema,
+          urlPattern: { type: 'string' },
+          requestId: { type: 'string' },
+          limit: { type: 'number' },
+        },
       },
-      forward('read_network_requests'),
-    ),
+      execute: forward('read_network_requests'),
+    },
   ]
 
   /**
@@ -726,91 +717,101 @@ export function chromeServer({ allowWrites }) {
    */
   if (allowWrites) {
     tools.push(
-      tool(
-        'chrome_click',
-        'Click something on the page. Take the ref from chrome_read_page or ' +
+      {
+        name: 'chrome_click',
+        description:
+          'Click something on the page. Take the ref from chrome_read_page or ' +
           'chrome_find rather than guessing coordinates. Say what you are ' +
           'about to do before doing anything irreversible.',
-        {
-          ref: z.string().optional().catch(undefined).describe('A ref_N from chrome_read_page.'),
-          coordinate: z
-            .array(z.number())
-            .optional()
-            .catch(undefined)
-            .describe('[x, y] fallback when there is no ref.'),
-          tabId,
+        parameters: {
+          type: 'object',
+          properties: {
+            ref: { type: 'string', description: 'A ref_N from chrome_read_page.' },
+            coordinate: {
+              type: 'array',
+              items: { type: 'number' },
+              description: '[x, y] fallback when there is no ref.',
+            },
+            tabId: tabIdSchema,
+          },
         },
-        async (args) => forward('computer')({ action: 'left_click', ...args }),
-      ),
+        execute: async (args) => forward('computer')({ action: 'left_click', ...args }),
+      },
 
-      tool(
-        'chrome_type',
-        'Type text into whatever is focused. Click the field first.',
-        { text: z.string(), tabId },
-        async (args) => forward('computer')({ action: 'type', ...args }),
-      ),
+      {
+        name: 'chrome_type',
+        description: 'Type text into whatever is focused. Click the field first.',
+        parameters: {
+          type: 'object',
+          properties: { text: { type: 'string' }, tabId: tabIdSchema },
+          required: ['text'],
+        },
+        execute: async (args) => forward('computer')({ action: 'type', ...args }),
+      },
 
-      tool(
-        'chrome_key',
-        'Press a key or chord, e.g. "Return", "Escape", "cmd+a".',
-        { text: z.string().describe('The key to press.'), tabId },
-        async (args) => forward('computer')({ action: 'key', ...args }),
-      ),
+      {
+        name: 'chrome_key',
+        description: 'Press a key or chord, e.g. "Return", "Escape", "cmd+a".',
+        parameters: {
+          type: 'object',
+          properties: {
+            text: { type: 'string', description: 'The key to press.' },
+            tabId: tabIdSchema,
+          },
+          required: ['text'],
+        },
+        execute: async (args) => forward('computer')({ action: 'key', ...args }),
+      },
 
-      tool(
-        'chrome_form_input',
-        'Set the value of a form field directly — more reliable than typing ' +
+      {
+        name: 'chrome_form_input',
+        description:
+          'Set the value of a form field directly — more reliable than typing ' +
           'for selects, checkboxes and long values.',
-        {
-          ref: z.string().describe('A ref_N from chrome_read_page.'),
-          value: z.union([z.string(), z.number(), z.boolean()]),
-          tabId,
+        parameters: {
+          type: 'object',
+          properties: {
+            ref: { type: 'string', description: 'A ref_N from chrome_read_page.' },
+            value: { type: 'string', description: 'The value to set. Numbers and booleans are accepted and coerced.' },
+            tabId: tabIdSchema,
+          },
+          required: ['ref', 'value'],
         },
-        forward('form_input'),
-      ),
+        execute: forward('form_input'),
+      },
 
-      tool(
-        'chrome_new_tab',
-        'Open a fresh blank tab and work in it from now on.',
-        {},
-        async (args) => {
+      {
+        name: 'chrome_new_tab',
+        description: 'Open a fresh blank tab and work in it from now on.',
+        parameters: { type: 'object', properties: {} },
+        execute: async (args) => {
           const out = await forward('tabs_create_mcp', { needsTab: false })(args)
           // Whatever was just opened is what the next action should land in.
           activeTab = null
           return out
         },
-      ),
+      },
 
-      tool(
-        'chrome_close_tab',
-        'Close a tab by id.',
-        {
-          tabId: z
-            .union([z.number(), z.string()])
-            .describe('The numeric tabId to close, from chrome_tabs.'),
+      {
+        name: 'chrome_close_tab',
+        description: 'Close a tab by id.',
+        parameters: {
+          type: 'object',
+          properties: {
+            tabId: { type: 'number', description: 'The numeric tabId to close, from chrome_tabs.' },
+          },
+          required: ['tabId'],
         },
-        async (args) => {
+        execute: async (args) => {
           const out = await forward('tabs_close_mcp', { needsTab: false })(args)
           if (Number(args.tabId) === activeTab) activeTab = null
           return out
         },
-      ),
+      },
     )
   }
 
-  return createSdkMcpServer({
-    name: 'jarvis_chrome',
-    version: '1.0.0',
-    instructions:
-      "The user's own Chrome, already signed in to everything they use. " +
-      'Reach for it when the answer is behind a login or has to be seen on a ' +
-      'real page. Reading is free; acting on a page is not, so say what you ' +
-      'are doing before you do anything that changes something.',
-    // Behind tool search the model would never think to look, and "open my
-    // GitHub notifications" would quietly become a web search instead.
-    alwaysLoad: true,
-    tools,
-  })
+  return tools
 }
 
 /** Whether the extension looks reachable, for the boot log. */

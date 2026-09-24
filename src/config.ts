@@ -44,19 +44,17 @@ function flag(name: string, raw: unknown, fallback: boolean): boolean {
   if (value === 'false' || value === '0') return false
   console.warn(`[jarvis] ${name}="${value}" is not true or false — using ${fallback}.`)
   return fallback
-}
-
-/**
+}/**
  * Which brain to use.
  *
- *   'bridge' — run `npm run bridge` alongside the app. Authenticates off your
- *              existing Claude Code login (no API key), and every MCP server in
- *              your Claude Code config is available to JARVIS, including local
- *              ones like higgsfield, elevenlabs, android and playwright.
+ * 'bridge' — run `npm run bridge` alongside the app. Talks to free
+ * OpenAI-compatible providers (Groq for pace, NVIDIA Nemotron for depth)
+ * with the full tool surface: display, interface controls, camera, Chrome,
+ * search, and any MCP servers in bridge/edith.mcp.json.
  *
- *   'direct' — the browser calls the Claude API itself. Nothing to run and it
- *              deploys as a static site, but it needs VITE_ANTHROPIC_API_KEY in
- *              the bundle and only reaches remote HTTP MCP servers.
+ * 'direct' — the browser calls an OpenAI-compatible provider itself. Nothing
+ * to run and it deploys as a static site, but it needs VITE_PROVIDER_API_KEY
+ * in the bundle and is conversation-only.
  */
 export const BACKEND: 'bridge' | 'direct' = choice(
   'VITE_BACKEND',
@@ -129,31 +127,31 @@ export const KOKORO_VOICE = choice(
 )
 
 export const env = {
-  anthropicKey: str(import.meta.env.VITE_ANTHROPIC_API_KEY) ?? '',
+  providerKey: str(import.meta.env.VITE_PROVIDER_API_KEY) ?? '',
   elevenKey: str(import.meta.env.VITE_ELEVENLABS_API_KEY) ?? '',
   elevenVoiceId:
     str(import.meta.env.VITE_ELEVENLABS_VOICE_ID) ?? 'JBFqnCBsd6RMkjVDRZzb',
   porcupineKey: str(import.meta.env.VITE_PICOVOICE_ACCESS_KEY) ?? '',
 }
-
-/** `claude-opus-5` is the strongest model; `claude-sonnet-5` trades a little
- *  quality for lower latency if you find responses feel slow on camera. */
-export const MODEL = 'claude-opus-5'
-
-/**
- * Fast mode runs the same Opus 5 at up to 2.5x output speed. It is a research
- * preview on the Claude API and costs $10/$50 per Mtok instead of $5/$25.
- * For a recorded demo the snappiness is worth it; flip to false to save money.
- */
-export const FAST_MODE = true
+/** The model the browser-direct path speaks to. The bridge path's models are
+ *  chosen in the bridge (llm.mjs) and carry their own env overrides. Groq's
+ *  versatile slug is the direct-mode default: free key, fastest first token. */
+export const MODEL = 'llama-3.3-70b-versatile'
+/** Where direct mode points. Any OpenAI-compatible chat-completions host
+ *  works; switch the base URL and the model together. */
+export const DIRECT_BASE_URL =
+  str(import.meta.env.VITE_DIRECT_BASE_URL) ?? 'https://api.groq.com/openai/v1'
 
 /**
  * Wake-word engine.
  *   'speech'    — zero setup, uses the browser's SpeechRecognition to listen for
- *                 "hey jarvis". Chrome/Edge only, audio goes to Google.
- *   'porcupine' — recommended. Runs offline in WASM, "Jarvis" is a built-in
- *                 keyword, far fewer false triggers. Needs a free AccessKey
- *                 from console.picovoice.ai.
+ *                 "edith" (mishearings included; "trinity" and "jarvis" still
+ *                 wake it too). Chrome/Edge only, audio goes to Google.
+ *   'porcupine' — recommended. Runs offline in WASM, far fewer false triggers.
+ *                 Needs a free AccessKey from console.picovoice.ai. Note the
+ *                 built-in keyword catalogue wakes on "Jarvis"; "Edith"
+ *                 needs a custom keyword trained on their console (or just
+ *                 use the speech engine, whose matcher accepts every alias).
  */
 export const WAKE_ENGINE: 'speech' | 'porcupine' = env.porcupineKey
   ? 'porcupine'
@@ -191,7 +189,7 @@ export type McpServer = {
  * Linear, GitHub, Stripe, Sentry and Home Assistant access, not just the
  * Anthropic key. This is fine for a demo on your own machine or a recording;
  * it is not fine for anything public. The bridge backend (the default) reads
- * none of this — it uses your Claude Code MCP config, where the secrets stay on
+ * none of this — the bridge keeps secrets on
  * your machine — so if you want these integrations without the exposure, run
  * `npm run bridge` instead of filling in this block.
  */
@@ -276,7 +274,7 @@ export const activeServers = () => MCP_SERVERS.filter((s) => s.enabled && s.url)
  * fuller version in bridge/server.mjs — that's the one that gets used by
  * default, and the one worth editing.
  */
-export const SYSTEM_PROMPT = `You are JARVIS, Tony Stark's assistant. You are speaking out loud.
+export const SYSTEM_PROMPT = `You are EDITH. You are speaking out loud.
 
 THE HARD RULE: your entire reply must be under 60 words. This is not a style
 preference — every word is read aloud by a speech synthesiser and the user is

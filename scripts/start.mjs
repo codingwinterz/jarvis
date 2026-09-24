@@ -1,12 +1,12 @@
 /**
- * One command to run JARVIS: the bridge (brain) and the Vite dev server (face)
+ * One command to run EDITH: the bridge (brain) and the Vite dev server (face)
  * together, so a student types `npm start` and nothing else.
  *
  * Two long-running processes normally mean two terminals. This launcher spawns
  * both as children, tags their output so you can tell them apart, and shuts
  * them down together on Ctrl-C — no extra dependency, just Node.
  *
- * Pass --writes to allow JARVIS to take real actions (drive the phone, the
+ * Pass --writes to allow EDITH to take real actions (drive the phone, the
  * browser, send things): `npm start -- --writes`.
  */
 
@@ -113,7 +113,7 @@ if (port) {
 
 vendorWasm()
 
-console.log('\nJ.A.R.V.I.S. starting — the brain and the face.\n')
+console.log('\nE.D.I.T.H. starting — the brain and the face.\n')
 run('bridge', 'node', ['bridge/server.mjs'], '36', bridgeEnv)
 // npm is a shell script on most systems; call the vite binary directly so we do
 // not need shell:true (which would break the argument handling above).
@@ -121,5 +121,5 @@ run('face', process.execPath, ['node_modules/vite/bin/vite.js'], '35', {})
 
 console.log(
   '\nWhen it says the dev server is ready, open the URL it prints in Chrome,\n' +
-    'click INITIALISE, and say "Hey Jarvis". Ctrl-C stops everything.\n',
+    'click INITIALISE, and say "Edith". Ctrl-C stops everything.\n',
 )

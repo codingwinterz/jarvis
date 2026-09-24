@@ -1,13 +1,15 @@
 # Audio credits
 
-All three tracks are by **Kevin MacLeod** (incompetech.com), licensed
-**Creative Commons Attribution 4.0**. Free to use commercially — including in a
-monetised YouTube video — provided the attribution below appears somewhere the
-audience can see it (a description box is fine).
+The two shipped tracks — `ambient.mp3` and `work.mp3` — are by
+**Kevin MacLeod** (incompetech.com), licensed **Creative Commons Attribution
+4.0**. Free to use commercially — including in a monetised YouTube video —
+provided the attribution below appears somewhere the audience can see it (a
+description box is fine). `intro-music.mp3` is your own track to add; honour
+its licence the same way.
 
 | File | Track | Used for |
 |---|---|---|
-| `boot-music.mp3` | *Impact Prelude* | The swell when the reactor comes up |
+| `intro-music.mp3` | *(your track — any mp3, this filename)* | The music under EDITH's boot line |
 | `ambient.mp3` | *Ossuary 6 – Air* | Low bed looping under the interface |
 | `work.mp3` | *Mechanolith* | Rises while a tool is running |
 
@@ -30,8 +32,12 @@ tracks are in the same register and cost you a line of text instead.
 
 ## Replacing them
 
-Drop in any MP3 with the same filename and it takes over — nothing in the code
-references the track names. Other sources worth a look: incompetech.com (same
+The intro slot is `intro-music.mp3` — drop your track in under that name and it
+plays under EDITH's boot line; if it isn't there, the app falls back to
+`boot-music.mp3` (*Impact Prelude*) automatically, so that file now earns its
+keep again — with neither present the cue skips and only the line is spoken.
+
+Other sources worth a look: incompetech.com (same
 licence), Pixabay Music (CC0, no attribution at all), and the YouTube Audio
 Library.
 

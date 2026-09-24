@@ -1,0 +1,40 @@
+{
+  "//": "EDITH MCP servers. stdio entries spawn a local process; url entries speak the Streamable HTTP transport. Everything here is optional — delete an entry and that tool family simply disappears. Discovered tools register as mcp__<server>__<tool> and pass through the same read-only permission gate as every other tool.\n\nGMAIL & GITHUB ship below, disabled until you paste secrets. github wants a fine-grained PAT from https://github.com/settings/personal-access-tokens as \"token\" (Repository contents: read is enough for questions; add pull-requests: write to open PRs). zapier wants your MCP hook URL from https://mcp.zapier.com -> New MCP Server as \"url\" — one URL covers Gmail, Google Calendar, Sheets and Drive; Pipedream is an equivalent. Set \"enabled\": true on each one you fill in, then restart the bridge. Reads run immediately; sending mail or opening PRs needs the bridge started with `npm run bridge:writes` (see decideTool in bridge/server.mjs).\n\nSECRETS: this file is NOT gitignored (only *.local is) — never commit a real token or a real hook URL.",
+  "servers": {
+    "filesystem": {
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "@modelcontextprotocol/server-filesystem", "C:\\"],
+      "enabled": true
+    },
+    "github": {
+      "url": "https://api.githubcopilot.com/mcp/",
+      "token": "${GITHUB_MCP_PAT}",
+      "enabled": true,
+      "comment": "GitHub's official remote MCP — mail-order OAuth not required. Create a fine-grained PAT (free) at https://github.com/settings/personal-access-tokens and put GITHUB_MCP_PAT=github_pat_… in .env.local (gitignored). The token is read from the environment at boot — nothing secret lives in this file. Repository contents: read is enough for questions; add pull-requests: write to open PRs. Reads (issues, PRs, code search) run on the default read-only gate; opening PRs or commenting needs `npm run bridge:writes`. If the PAT is missing or still a placeholder, the server stays off with a note in the boot log instead of failing a turn mid-sentence.",
+      "comment2": "This file is NOT gitignored (only *.local is) — a real token pasted here would be one `git add` away from exposure. Keep it in .env.local."
+    },
+    "pipedream": {
+      "url": "https://remote.mcp.pipedream.net/v3",
+      "pipedream": true,
+      "app": "",
+      "enabled": true,
+      "comment": "app: gmail | github | … scopes the tool set; empty = discover apps first. Secrets live in .env.local (gitignored): PIPEDREAM_CLIENT_ID, PIPEDREAM_CLIENT_SECRET, PIPEDREAM_PROJECT_ID — pipedream.com -> your project -> Settings. The consumer URL mcp.pipedream.net/v2 needs an interactive browser sign-in the bridge cannot perform; this developer endpoint mints its own tokens.",
+      "comment2": "Token + project headers are minted automatically from those env vars and refreshed on 401 — nothing to paste here.",
+      "comment3": "Accounts you connected at chat.pipedream.com live in a SEPARATE namespace from this project's accounts. Connect the same Gmail/GitHub accounts in the project (pipedream.com -> project -> Accounts) for the tools to act on."
+    },
+    "zapier": {
+      "url": "PASTE_YOUR_ZAPIER_MCP_HOOK_URL_HERE",
+      "enabled": false
+    },
+    "_example_stdio": {
+      "command": "npx",
+      "args": ["@modelcontextprotocol/server-everything"],
+      "enabled": false
+    },
+    "_example_remote": {
+      "url": "https://mcp.example.com/mcp",
+      "token": "PASTE_TOKEN_HERE",
+      "enabled": false
+    }
+  }
+}

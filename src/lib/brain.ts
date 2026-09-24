@@ -1,7 +1,7 @@
 import { BACKEND } from '../config'
-import * as direct from './anthropic'
+import * as direct from './provider'
 import * as bridge from './bridge'
-import type { AskHandlers, Msg } from './anthropic'
+import type { AskHandlers, Msg } from './provider'
 import type { Blade, Panel } from '../store'
 
 export type { AskHandlers, Msg }
@@ -11,13 +11,13 @@ export type { ConnectionState } from './bridge'
  * Picks the brain. Both backends answer a question and stream text and tool
  * events back; they differ in where they run and what they can reach.
  *
- *   bridge — a local Node process running the Claude Agent SDK. Uses your
- *            existing Claude Code login, so no API key, and every MCP server
- *            you have configured is available, including local stdio ones.
- *
- *   direct — the browser calls the Claude API itself. No process to run and it
- *            deploys as a static site, but it needs an API key in the bundle
- *            and can only use remote HTTP MCP servers.
+ *   bridge — a local Node process running its own agent loop over free
+ *            OpenAI-compatible providers (Groq + NVIDIA Nemotron). The full
+ *            tool surface lives here: display, camera, Chrome, search, MCP.
+ * *   direct — the browser calls an OpenAI-compatible provider itself (Groq by
+ *   default). No process to run and it
+ * deploys as a static site, but it needs an API key in the bundle
+ * and has no tool surface — conversation only.
  */
 
 export const usingBridge = BACKEND === 'bridge'

@@ -8,7 +8,7 @@ import { useStore } from '../store'
  * Four beats, in order, cyan on black:
  *   1. an angular status bar — "INITIATING SYSTEM" — over a scrolling boot log,
  *      with a segmented bar filling left to right;
- *   2. concentric reticle rings assembling inward until "J.A.R.V.I.S" resolves
+ *   2. concentric reticle rings assembling inward until "E.D.I.T.H" resolves
  *      at the centre;
  *   3. the suit schematic — a wireframe figure with component call-outs;
  *   4. the triangular arc reactor lighting from a dim outline to full glow,
@@ -146,7 +146,7 @@ function Rings({ reduced }: { reduced: boolean }) {
         animate={{ opacity: 1, letterSpacing: '0.42em' }}
         transition={{ duration: 0.7, delay: 0.5, ease }}
       >
-        J.A.R.V.I.S
+        E.D.I.T.H
       </motion.text>
     </svg>
   )

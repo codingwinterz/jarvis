@@ -1,47 +1,28 @@
-import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk'
-import { z } from 'zod'
-
-/**
- * The `ui_*` tools — JARVIS's control of his own face.
- *
- * `display` gives him a screen to put things on. This gives him the screen
- * itself: the colour the room is lit in, the size and temper of the reactor,
- * what hangs in orbit around it, which furniture is up, and the occasional
- * flourish. The point is not decoration. An interface that goes red before he
- * says a word, or drops every rail so one photograph fills the frame, is
- * carrying meaning faster than speech can — which is the whole reason a voice
- * assistant has a face at all.
- *
- * The descriptions below are the product. They are the only place the model
- * learns what the interface can be made to do and, more importantly, when it is
- * worth doing — so they are written as direction, not as parameter lists.
- *
- * Like panels.mjs this runs in-process, so a handler pushes straight down the
- * open WebSocket. Every handler emits exactly one message, matching the
- * bridge -> browser contract: { type: 'ui', op, args }.
- */
+// The `ui_*` tools — JARVIS's control of his own face.
+//
+// `display` gives him a screen to put things on. This gives him the screen
+// itself: the colour the room is lit in, the size and temper of the reactor,
+// what hangs in orbit around it, which furniture is up, and the occasional
+// flourish. The point is not decoration. An interface that goes red before he
+// says a word, or drops every rail so one photograph fills the frame, is
+// carrying meaning faster than speech can — which is the whole reason a voice
+// assistant has a face at all.
+//
+// The descriptions below are the product. They are the only place the model
+// learns what the interface can be made to do and, more importantly, when it is
+// worth doing — so they are written as direction, not as parameter lists.
+//
+// Like panels.mjs this runs in-process, so a handler pushes straight down the
+// open WebSocket. Every handler emits exactly one message, matching the
+// bridge -> browser contract: { type: 'ui', op, args }.
 
 /**
  * Numbers and booleans arrive however the model felt like writing them — '0.5'
  * as a string, 1 for true, null for "leave it". A turn that fails because a
  * scale was quoted is a turn the user watched break, so nothing here rejects:
- * unions accept the loose forms, `.catch()` swallows the rest as absent, and
- * the handlers clamp into the ranges the browser expects. The worst outcome of
- * a bad value is that it is ignored.
+ * the handlers coerce loose forms and clamp into the ranges the browser
+ * expects. The worst outcome of a bad value is that it is ignored.
  */
-const looseNumber = (note) =>
-  z.union([z.number(), z.string()]).optional().catch(undefined).describe(note)
-
-const looseBool = (note) =>
-  z
-    .union([z.boolean(), z.string(), z.number()])
-    .optional()
-    .catch(undefined)
-    .describe(note)
-
-const colour = (note) =>
-  z.union([z.string(), z.null()]).optional().catch(undefined).describe(note)
-
 const FALSEY = new Set(['false', '0', 'no', 'off', 'hide', 'hidden', 'none'])
 
 /** Words that mean "stop overriding this and follow the phase again". */
@@ -102,36 +83,16 @@ const PHASE_NOTES = {
 
 const PHASES = Object.keys(PHASE_NOTES)
 
-const themeSchema = {
-  accent: colour(
-    'One CSS colour that overrides the phase colour everywhere at once — the ' +
-      'reactor, the panel borders, the rails, the type. e.g. "#ff2d2d", ' +
-      '"crimson", "rgb(20 200 255)". Pass null or "auto" to hand the interface ' +
-      'back to its phase colours.',
-  ),
-  background: colour(
-    'The page behind everything. Near-black by default and it must stay dark ' +
-      '— a pale background destroys the glow and makes the display unreadable. ' +
-      'Nudge it instead: "#080d18" for a colder room, "#150808" under an ' +
-      'alert. Pass null or "auto" for the stock near-black.',
-  ),
-  phase_colors: z
-    .object(
-      // Built from one list so this can never drift from the store's phases.
-      Object.fromEntries(
-        PHASES.map((p) => [p, colour(`Colour for ${p} — ${PHASE_NOTES[p]}.`)]),
-      ),
-    )
-    .partial()
-    .optional()
-    .catch(undefined)
-    .describe(
-      'Recolour individual states rather than overriding all of them. Use ' +
-        'this when one moment deserves its own identity — a red "thinking" ' +
-        'while you work through something grim — and the rest of the ' +
-        'interface should carry on as normal.',
-    ),
-}
+/** A JSON-Schema helper standing in for the old zod loose-number helper. */
+const looseNumber = (note) => ({
+  description: note + ' Accepts a number or a numeric string.',
+})
+
+const colour = (note) => ({
+  description:
+    note +
+    ' A CSS colour string, "auto" to hand control back to the phases, or null.',
+})
 
 const THEME_DESCRIPTION = `Retint the whole interface.
 
@@ -149,40 +110,31 @@ the moment that earned it has passed — call \`ui_reset\` when it is over.
 
 Never announce that you have done it. The user is looking at the screen.`
 
-const reactorSchema = {
-  color: colour(
-    'The reactor core on its own, without touching the rest of the interface. ' +
-      'Any CSS colour. Pass null or "auto" to follow the accent and phase again.',
-  ),
-  scale: looseNumber(
-    'Size multiplier, 0.2 to 3, default 1. Below 1 the reactor recedes and the ' +
-      'panels dominate; above 1.5 it owns the frame and everything else reads ' +
-      'as trim.',
-  ),
-  intensity: looseNumber(
-    'Glow and brightness, 0 to 3, default 1. 0.3 reads as a system on ' +
-      'standby, 2 or more as strain — a hard computation, a warning, a surge.',
-  ),
-  spin: looseNumber(
-    'Rotation-rate multiplier, 0 to 5, default 1. 0 stops it dead, which reads ' +
-      'as powered down or frozen and is worth exactly one dramatic moment. 3 ' +
-      'and up reads as effort.',
-  ),
-  style: z
-    .enum(['ring', 'sphere', 'wire'])
-    .optional()
-    .catch(undefined)
-    .describe(
-      'ring = the stock arc-reactor halo. sphere = a solid core, heavier and ' +
-        'more present, good when you are the subject of the conversation. ' +
-        'wire = a skeletal lattice, good for diagnostics, degraded states, and ' +
-        'anything that should look like it is being taken apart.',
+const themeParameters = {
+  type: 'object',
+  properties: {
+    accent: colour(
+      'One CSS colour that overrides the phase colour everywhere at once — the ' +
+        'reactor, the panel borders, the rails, the type. e.g. "#ff2d2d", ' +
+        '"crimson", "rgb(20 200 255)".',
     ),
-  visible: looseBool(
-    'false removes the reactor entirely. Only when something else has earned ' +
-      'the centre of the screen — a full-frame image the user is studying. ' +
-      'Put it back the moment that is over.',
-  ),
+    background: colour(
+      'The page behind everything. Near-black by default and it must stay dark ' +
+        '— a pale background destroys the glow and makes the display unreadable. ' +
+        'Nudge it instead: "#080d18" for a colder room, "#150808" under an alert.',
+    ),
+    phase_colors: {
+      type: 'object',
+      description:
+        'Recolour individual states rather than overriding all of them. Keys ' +
+        `are any of: ${PHASES.join(', ')}. Use this when one moment deserves ` +
+        'its own identity — a red "thinking" while you work through something ' +
+        'grim — and the rest of the interface should carry on as normal.',
+      properties: Object.fromEntries(
+        PHASES.map((p) => [p, colour(`Colour for ${p} — ${PHASE_NOTES[p]}.`)]),
+      ),
+    },
+  },
 }
 
 const REACTOR_DESCRIPTION = `Reshape the reactor at the centre of the display.
@@ -197,58 +149,43 @@ motionless and wireframed all at once is not a state, it is a mess.
 
 Everything omitted stays as it is.`
 
-const orbitSchema = {
-  action: z
-    .enum(['add', 'remove', 'clear'])
-    .default('add')
-    .catch('add')
-    .describe(
-      'add = put an image in orbit (replaces the one with the same id). ' +
-        'remove = take one down by id. clear = take them all down.',
+const reactorParameters = {
+  type: 'object',
+  properties: {
+    color: colour(
+      'The reactor core on its own, without touching the rest of the interface. ' +
+        'Any CSS colour. "auto" or null to follow the accent and phase again.',
     ),
-  id: z
-    .string()
-    .optional()
-    .catch(undefined)
-    .describe(
-      'A short name you choose, e.g. "suit", "mars", "shot-1". Required to ' +
-        'remove. On add it lets you move an object later instead of stacking a ' +
-        'second copy on top of it.',
+    scale: looseNumber(
+      'Size multiplier, 0.2 to 3, default 1. Below 1 the reactor recedes and the ' +
+        'panels dominate; above 1.5 it owns the frame and everything else reads ' +
+        'as trim.',
     ),
-  src: z
-    .string()
-    .optional()
-    .catch(undefined)
-    .describe(
-      'The image. Give an absolute disk path or a file:/// URL — a render you ' +
-        'generated, a screenshot you took, a file on this machine. http:// and ' +
-        'https:// are blocked by the page and will be refused, so never orbit ' +
-        'a picture found on the web.',
+    intensity: looseNumber(
+      'Glow and brightness, 0 to 3, default 1. 0.3 reads as a system on ' +
+        'standby, 2 or more as strain — a hard computation, a warning, a surge.',
     ),
-  radius: looseNumber(
-    'Orbit radius as a fraction of the smaller screen axis, 0.1 to 1.2, ' +
-      'default 0.55. 0.3 hugs the reactor, 0.8 sweeps out past the panels.',
-  ),
-  speed: looseNumber(
-    'Revolutions per minute, -30 to 30, default 4. Two to six is stately and ' +
-      'nothing above ten is watchable for long. Negative goes the other way — ' +
-      'a second object counter-rotating reads as machinery rather than decoration.',
-  ),
-  size: looseNumber('Rendered size in pixels, 16 to 400, default 96.'),
-  tilt: looseNumber(
-    'Tilt of the orbital plane in degrees, -80 to 80, default 24. 0 is a flat ' +
-      'circle facing the user; tipping it flattens the path into an ellipse, ' +
-      'which is what sells the depth. 20 to 50 is the sweet spot.',
-  ),
-  opacity: looseNumber(
-    '0 to 1, default 0.9. Drop to 0.4 when the object is atmosphere rather ' +
-      'than the point.',
-  ),
-  phase: looseNumber(
-    'Starting angle in degrees. Omit it and objects are spaced apart ' +
-      'automatically; set it only when you want two things deliberately ' +
-      'opposed, e.g. 0 and 180.',
-  ),
+    spin: looseNumber(
+      'Rotation-rate multiplier, 0 to 5, default 1. 0 stops it dead, which reads ' +
+        'as powered down or frozen and is worth exactly one dramatic moment. 3 ' +
+        'and up reads as effort.',
+    ),
+    style: {
+      type: 'string',
+      enum: ['ring', 'sphere', 'wire'],
+      description:
+        'ring = the stock arc-reactor halo. sphere = a solid core, heavier and ' +
+        'more present, good when you are the subject of the conversation. ' +
+        'wire = a skeletal lattice, good for diagnostics, degraded states, and ' +
+        'anything that should look like it is being taken apart.',
+    },
+    visible: looseNumber(
+      'true or false — false removes the reactor entirely. Only when something ' +
+        'else has earned the centre of the screen — a full-frame image the user ' +
+        'is studying. Put it back the moment that is over. (1/0 and yes/no are ' +
+        'accepted.)',
+    ),
+  },
 }
 
 const ORBIT_DESCRIPTION = `Hang an image in orbit around the reactor.
@@ -268,12 +205,67 @@ Rules that matter:
   - This is not a substitute for \`display\`. Orbit it when the user should
     feel it; put it in a panel when they need to look at it.`
 
-const chromeSchema = {
-  systems: looseBool('The SYSTEMS rail down the left — connected servers and status.'),
-  transcript: looseBool('The running conversation log.'),
-  tool_badge: looseBool('The active-tool readout under the reactor.'),
-  suggestions: looseBool('The "try saying…" hint.'),
-  brand: looseBool('The J.A.R.V.I.S. wordmark and status line.'),
+const orbitParameters = {
+  type: 'object',
+  properties: {
+    action: {
+      type: 'string',
+      enum: ['add', 'remove', 'clear'],
+      description:
+        'add = put an image in orbit (replaces the one with the same id). ' +
+        'remove = take one down by id. clear = take them all down. Default add.',
+    },
+    id: {
+      type: 'string',
+      description:
+        'A short name you choose, e.g. "suit", "mars", "shot-1". Required to ' +
+        'remove. On add it lets you move an object later instead of stacking a ' +
+        'second copy on top of it.',
+    },
+    src: {
+      type: 'string',
+      description:
+        'The image. Give an absolute disk path or a file:/// URL — a render you ' +
+        'generated, a screenshot you took, a file on this machine. http:// and ' +
+        'https:// are blocked by the page and will be refused, so never orbit ' +
+        'a picture found on the web.',
+    },
+    radius: looseNumber(
+      'Orbit radius as a fraction of the smaller screen axis, 0.1 to 1.2, ' +
+        'default 0.55. 0.3 hugs the reactor, 0.8 sweeps out past the panels.',
+    ),
+    speed: looseNumber(
+      'Revolutions per minute, -30 to 30, default 4. Two to six is stately and ' +
+        'nothing above ten is watchable for long. Negative goes the other way — ' +
+        'a second object counter-rotating reads as machinery rather than decoration.',
+    ),
+    size: looseNumber('Rendered size in pixels, 16 to 400, default 96.'),
+    tilt: looseNumber(
+      'Tilt of the orbital plane in degrees, -80 to 80, default 24. 0 is a flat ' +
+        'circle facing the user; tipping it flattens the path into an ellipse, ' +
+        'which is what sells the depth. 20 to 50 is the sweet spot.',
+    ),
+    opacity: looseNumber(
+      '0 to 1, default 0.9. Drop to 0.4 when the object is atmosphere rather ' +
+        'than the point.',
+    ),
+    phase: looseNumber(
+      'Starting angle in degrees. Omit it and objects are spaced apart ' +
+        'automatically; set it only when you want two things deliberately ' +
+        'opposed, e.g. 0 and 180.',
+    ),
+  },
+}
+
+const chromeParameters = {
+  type: 'object',
+  properties: {
+    systems: looseNumber('true/false — the SYSTEMS rail down the left: connected servers and status.'),
+    transcript: looseNumber('true/false — the running conversation log.'),
+    tool_badge: looseNumber('true/false — the active-tool readout under the reactor.'),
+    suggestions: looseNumber('true/false — the "try saying…" hint.'),
+    brand: looseNumber('true/false — the T.R.I.N.I.T.Y. wordmark and status line.'),
+  },
 }
 
 const CHROME_DESCRIPTION = `Show or hide the furniture around the display.
@@ -332,21 +324,15 @@ let seq = 0
 const GOLDEN_ANGLE = 137.507764
 
 /**
- * @param {(op: string, args: object) => void} emit - pushes one ui message
+ * @param {{ emit: (op: string, args: object) => void }} io
  */
-export function uiServer(emit) {
-  return createSdkMcpServer({
-    name: 'jarvis_ui',
-    version: '1.0.0',
-    instructions:
-      'JARVIS\'s control of his own interface — colour, reactor, orbiting ' +
-      'images, chrome, effects. Change it when the change carries meaning, ' +
-      'and put it back afterwards with ui_reset.',
-    // Same reasoning as the display server: behind tool search it would never
-    // occur to the model that the interface is something it can touch.
-    alwaysLoad: true,
-    tools: [
-      tool('ui_theme', THEME_DESCRIPTION, themeSchema, async (args) => {
+export function uiTools({ emit }) {
+  return [
+    {
+      name: 'ui_theme',
+      description: THEME_DESCRIPTION,
+      parameters: themeParameters,
+      async execute(args) {
         const patch = {}
         put(patch, 'accent', toColour(args.accent))
         put(patch, 'background', toColour(args.background))
@@ -363,9 +349,14 @@ export function uiServer(emit) {
         if (!has(patch)) return ok('No change — no colours were given.')
         emit('patch', patch)
         return ok('Interface retinted.')
-      }),
+      },
+    },
 
-      tool('ui_reactor', REACTOR_DESCRIPTION, reactorSchema, async (args) => {
+    {
+      name: 'ui_reactor',
+      description: REACTOR_DESCRIPTION,
+      parameters: reactorParameters,
+      async execute(args) {
         const reactor = {}
         put(reactor, 'color', toColour(args.color))
         put(reactor, 'scale', clamp(args.scale, 0.2, 3))
@@ -377,9 +368,14 @@ export function uiServer(emit) {
         if (!has(reactor)) return ok('No change — no reactor properties were given.')
         emit('patch', { reactor })
         return ok('Reactor adjusted.')
-      }),
+      },
+    },
 
-      tool('ui_orbit', ORBIT_DESCRIPTION, orbitSchema, async (args) => {
+    {
+      name: 'ui_orbit',
+      description: ORBIT_DESCRIPTION,
+      parameters: orbitParameters,
+      async execute(args) {
         const action = args.action ?? 'add'
 
         if (action === 'clear') {
@@ -436,9 +432,14 @@ export function uiServer(emit) {
         }
         emit('orbit', { action: 'add', ...object })
         return ok(`In orbit as "${object.id}".`)
-      }),
+      },
+    },
 
-      tool('ui_chrome', CHROME_DESCRIPTION, chromeSchema, async (args) => {
+    {
+      name: 'ui_chrome',
+      description: CHROME_DESCRIPTION,
+      parameters: chromeParameters,
+      async execute(args) {
         const chrome = {}
         put(chrome, 'systems', toBool(args.systems))
         put(chrome, 'transcript', toBool(args.transcript))
@@ -451,44 +452,56 @@ export function uiServer(emit) {
         if (!has(chrome)) return ok('No change — nothing was named.')
         emit('patch', { chrome })
         return ok('Chrome updated.')
-      }),
+      },
+    },
 
-      tool(
-        'ui_effect',
-        EFFECT_DESCRIPTION,
-        {
-          kind: z
-            .enum(['glitch', 'pulse', 'scan', 'shake', 'flash'])
-            .catch('pulse')
-            .describe('Which effect to fire.'),
+    {
+      name: 'ui_effect',
+      description: EFFECT_DESCRIPTION,
+      parameters: {
+        type: 'object',
+        properties: {
+          kind: {
+            type: 'string',
+            enum: ['glitch', 'pulse', 'scan', 'shake', 'flash'],
+            description: 'Which effect to fire. Default pulse.',
+          },
         },
-        async (args) => {
-          emit('effect', { kind: args.kind ?? 'pulse' })
-          return ok('Fired.')
-        },
-      ),
+      },
+      async execute(args) {
+        emit('effect', { kind: args.kind ?? 'pulse' })
+        return ok('Fired.')
+      },
+    },
 
-      tool(
-        'ui_screen',
-        SCREEN_DESCRIPTION,
-        {
-          what: z
-            .enum(['all', 'panels', 'transcript'])
-            .default('all')
-            .catch('all')
-            .describe('What to clear.'),
+    {
+      name: 'ui_screen',
+      description: SCREEN_DESCRIPTION,
+      parameters: {
+        type: 'object',
+        properties: {
+          what: {
+            type: 'string',
+            enum: ['all', 'panels', 'transcript'],
+            description: 'What to clear. Default all.',
+          },
         },
-        async (args) => {
-          const what = args.what ?? 'all'
-          emit('screen', { what })
-          return ok('Cleared.')
-        },
-      ),
+      },
+      async execute(args) {
+        const what = args.what ?? 'all'
+        emit('screen', { what })
+        return ok('Cleared.')
+      },
+    },
 
-      tool('ui_reset', RESET_DESCRIPTION, {}, async () => {
+    {
+      name: 'ui_reset',
+      description: RESET_DESCRIPTION,
+      parameters: { type: 'object', properties: {} },
+      async execute() {
         emit('reset', {})
         return ok('Interface restored.')
-      }),
-    ],
-  })
+      },
+    },
+  ]
 }

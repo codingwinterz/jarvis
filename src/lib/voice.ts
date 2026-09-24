@@ -1,6 +1,6 @@
 import { BRIDGE_HTTP_URL } from '../config'
 import { getMic } from './audio'
-import { speakingNow, speakingSince } from './tts'
+import { msSinceSpeech, speakingNow, speakingSince } from './tts'
 import { startVad, type Vad } from './vad'
 import { caps } from './capabilities'
 
@@ -65,20 +65,20 @@ export type Voice = {
 const WAKE_DEBOUNCE = 1500
 
 /**
- * His name, and the only wake phrase.
+ * EDITH's name, and the only wake phrase. "trinity" and JARVIS remain aliases.
  *
  * The optional prefix is genuinely optional: addressing him by name alone is
- * correct, and during an answer "Jarvis" on its own is the natural way to cut
- * in. The negative lookahead keeps possessives ("Jarvis's job") from waking him.
+ * correct, and during an answer "Edith" on its own is the natural way to cut
+ * in. The negative lookahead keeps possessives ("Edith's job") from waking him.
  *
- * The alternates are not padding. "Jarvis" is not in a general dictation
- * model's high-frequency vocabulary, and Chrome routinely returns Travis,
- * Jervis, Jarvys or Java's for a perfectly clear utterance — every one of which
- * used to be silently discarded, so the wake word "just didn't work" with no
- * indication why. Better a rare false wake than a name that does not answer.
+ * The alternates are not padding. "Edith" is regularly transcribed as "edit",
+ * and Chrome returns Idith, Edyth or Edith-adjacent nonsense for a hurried
+ * utterance — so every mishearing goes in rather than being silently
+ * discarded, which is how a wake word "just doesn't work" with no indication
+ * why. Better a rare false wake than a name that does not answer.
  */
 const WAKE =
-  /\b(?:hey|hi|ok|okay|yo)?\s*(?:jarvis|jarvys|jervis|jarvis's|travis|jarviss|java's|jarv)\b(?!'s)/i
+  /\b(?:hey|hi|ok|okay|yo)?\s*(?:edith|ediths|edyth|eddyth|idith|edit|trinity|trinnity|trinitee|jarvis|jarvys|jervis|jarvis's|travis|jarviss|java's|jarv)\b(?!'s)/i
 
 /** Everything after the wake phrase, which is usually the actual command. */
 function afterWake(text: string): string {
@@ -267,7 +267,7 @@ const norm = (s: string) =>
  * would be the single most infuriating failure this file could have.
  */
 const OVERRIDE =
-  /\b(stop|wait|jarvis|cancel|enough|quiet|hold on|shut up|never ?mind|forget it|no)\b/i
+  /\b(stop|wait|edith|edit|trinity|trinnity|jarvis|cancel|enough|quiet|hold on|shut up|never ?mind|forget it|no)\b/i
 
 /**
  * Words too common to be evidence of anything.
@@ -318,6 +318,52 @@ function isEcho(heard: string, spoken: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Transcripts nobody said
+// ---------------------------------------------------------------------------
+
+/**
+ * What the transcriber invents when a segment holds no speech.
+ *
+ * Whisper — Groq's included — does not return empty for silence, reverb or
+ * the tail of playback. It returns its most probable phrase from the training
+ * prior, and "Thank you." is the canonical one. That transcript then walks
+ * straight into the turn machine as a user turn: it opens a real exchange
+ * nobody wanted (thinking pause, spoken reply, follow-up window, back to
+ * standby — a conversation ended on a sentence the user never said), or it
+ * lands while he is still speaking, where it reads as a barge-in and kills
+ * the answer in flight.
+ *
+ * The echo filter cannot catch it: isEcho only compares against
+ * speakingNow(), whose 1800ms tail usually expires before a segment closes
+ * and the round trip to the transcriber returns. msSinceSpeech is the clock
+ * that survives the gap.
+ *
+ * Two lists, because they deserve different treatment:
+ *   - boilerplate that is never a real utterance, dropped whenever seen;
+ *   - bare closings — "thank you", "bye" — which ARE real speech, but are
+ *     dropped only inside the window in which the artefact appears: right
+ *     after his playback, when there is no echo left to match against. Said
+ *     later, they pass. Any phrasing with a word attached ("thank you, that
+ *     was perfect") never matches either list, so real gratitude with any
+ *     content still gets through even inside the window.
+ */
+const PHANTOM_ALWAYS =
+  /^(?:thanks for watching|thank you for watching|please subscribe|subtitles by.*|amara\.?org.*)$/i
+const PHANTOM_AFTER_SPEECH =
+  /^(?:thank you(?: very much)?|thanks(?: a (?:lot|bunch|million))?|you(?:'|’)re welcome|bye bye|bye|goodbye)$/i
+/** Generous: ECHO_TAIL_MS (1800) + segment close + STT round trip lands well
+ *  inside this. Deliberately not larger — a genuine bare "thank you" spoken
+ *  more than this after he finishes is allowed through. */
+const PHANTOM_WINDOW_MS = 4000
+
+function isPhantom(said: string): boolean {
+  const t = said.trim().replace(/[.!?…]+$/, '').trim()
+  if (!t) return false
+  if (PHANTOM_ALWAYS.test(t)) return true
+  return msSinceSpeech() < PHANTOM_WINDOW_MS && PHANTOM_AFTER_SPEECH.test(t)
+}
+
+// ---------------------------------------------------------------------------
 // Diagnostics
 // ---------------------------------------------------------------------------
 
@@ -332,7 +378,7 @@ function isEcho(heard: string, spoken: string): boolean {
  * apart in one glance.
  */
 export const diag = {
-  /** Which input engine is running: 'elevenlabs' (VAD+Scribe) or 'browser'. */
+  /** Which input engine is running: 'groq' | 'elevenlabs' (VAD + bridge STT) or 'browser'. */
   engine: 'browser',
   /** Whether the microphone pipeline is live. */
   running: false,
@@ -377,8 +423,9 @@ if (typeof window !== 'undefined') {
  * Pick the voice engine and start it.
  *
  * Two engines, chosen by what the bridge reported at boot (see capabilities.ts):
- *   - ElevenLabs available -> local voice-activity detection for instant
- *     barge-in, and ElevenLabs Scribe for the words. The reliable path.
+ *   - a cloud transcriber configured (Groq Whisper, else ElevenLabs Scribe)
+ *     -> local voice-activity detection for instant barge-in, the bridge for
+ *     the words. The reliable path.
  *   - nothing configured -> the browser's own SpeechRecognition, so a student
  *     with no keys still has a working assistant. Less robust, but free and
  *     zero-setup, and guarded by a heartbeat so its silent death is recovered.
@@ -398,21 +445,20 @@ export async function startVoice(h: VoiceHandlers): Promise<Voice> {
     )
     return { stop: () => {}, live: () => false }
   }
-  diag.engine = caps().stt ? 'elevenlabs' : 'browser'
-  return caps().stt ? startElevenVoice(h) : startBrowserVoice(h)
+  diag.engine = caps().stt ? (caps().sttEngine ?? 'groq') : 'browser'
+  return caps().stt ? startBridgeVoice(h) : startBrowserVoice(h)
 }
 
-/** VAD + ElevenLabs Scribe. */
-async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
+/** VAD + bridge transcription — Groq Whisper or Scribe, whichever the bridge holds a key for. */
+async function startBridgeVoice(h: VoiceHandlers): Promise<Voice> {
   let lastWake = 0
   let vad: Vad | null = null
 
   /**
    * Segments waiting for the transcriber, oldest first.
    *
-   * This was a boolean — `if (transcribing) return` — and that single line was
-   * the worst bug in the pause story. Segments arrive faster than Scribe
-   * answers whenever someone speaks in bursts, which is exactly what pausing
+   * This was a boolean — `if (transcribing) return` — and that single line was    * the worst bug in the pause story. Segments arrive faster than the bridge
+    * transcribes whenever someone speaks in bursts, which is exactly what pausing
    * mid-sentence looks like, so the second half of the thought was not merely
    * mis-timed, it was silently discarded. Queue instead: nothing a person says
    * out loud gets thrown away because the network was busy.
@@ -468,6 +514,13 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
 
       if (!said) {
         drop('nothing intelligible in the segment')
+        return
+      }
+
+      // Before the assembler and before the echo filter: if nobody said this,
+      // it must never become a caption, a held fragment, or a turn.
+      if (isPhantom(said)) {
+        drop(`transcriber artefact, not speech: "${said.slice(0, 40)}"`)
         return
       }
 
@@ -602,8 +655,7 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
 function startBrowserVoice(h: VoiceHandlers): Voice {
   const Ctor =
     (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition
-  if (!Ctor) {
-    h.onError('This browser has no speech recognition — use Chrome or Edge, or add an ElevenLabs key.')
+  if (!Ctor) {      h.onError('This browser has no speech recognition — use Chrome or Edge, or add a Groq/ElevenLabs key for bridge transcription.')
     return { stop: () => {}, live: () => false }
   }
 
@@ -651,6 +703,10 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
     const mode = h.mode()
     reset()
     if (!text || mode === 'deaf') return
+    if (isPhantom(text)) {
+      drop(`transcriber artefact, not speech: "${text.slice(0, 40)}"`)
+      return
+    }
     if (isEcho(text, speakingNow())) {
       drop('echo of his own voice')
       return
